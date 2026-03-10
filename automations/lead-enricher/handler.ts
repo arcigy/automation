@@ -61,7 +61,7 @@ export async function handler(
         systemPrompt,
         userMessage,
         maxTokens: 1000,
-        model: "gemini-2.0-flash"
+        model: "gemini-2.5-flash"
       });
 
       try {
