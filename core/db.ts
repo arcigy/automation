@@ -38,5 +38,24 @@ export async function runMigrations() {
     CREATE INDEX IF NOT EXISTS idx_sent_replies_lead_campaign 
       ON sent_replies (lead_email, campaign_id);
   `;
+  await sql`
+    CREATE TABLE IF NOT EXISTS leads (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      website TEXT UNIQUE NOT NULL,
+      original_name TEXT,
+      company_name_short TEXT,
+      decision_maker_name TEXT,
+      primary_email TEXT,
+      business_facts JSONB,
+      verification_status TEXT,
+      verification_notes TEXT,
+      source TEXT,
+      created_at TIMESTAMPTZ DEFAULT now(),
+      updated_at TIMESTAMPTZ DEFAULT now()
+    );
+  `;
+  await sql`
+    CREATE INDEX IF NOT EXISTS idx_leads_website ON leads (website);
+  `;
   console.log("Migrations applied successfully.");
 }

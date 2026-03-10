@@ -15,6 +15,10 @@ Logging: PostgreSQL tabuľka automation_logs | Deploy: Railway
 4. Každý run sa loguje cez core/logger.ts → logRun()
 5. Vstup vždy validovaný cez Zod v schema.ts
 6. API odpovede vždy cez core/response.ts
+7. **Kritické pravidlo pre Gemini modely**: `gemini-2.5-flash` je absolútne najstarší model, ktorý funguje. Staršie modely (napr. 1.5) sú zastaralé a vyhadzujú 404 Not Found.
+8. **Kľúče (iba pre info, nekódovať natvrdo)**:
+   - Lokálny vývoj (vkladá sa do `.env`): `AIzaSyCnGclSdftDsOudOMe04pCBZ46mGqTBcZA`
+   - Ostrý Railway kľúč (ZAKÁZANÉ POUŽÍVAŤ LOKÁLNE): `AIzaSyBDI7cQptVKxZNAVlpJMOIBdW2rR1lt0SY`
 
 - Tools: [akcia].tool.ts
 - Handler: vždy handler.ts

@@ -1,0 +1,23 @@
+{
+  "success": true,
+  "data": {
+    "leads": [
+      {
+        "original_name": "Autoservis, Slovensko",
+        "website": "https://www.oma.sk/auto/autoservis",
+        "decision_maker_name": null,
+        "business_facts": [],
+        "verification_status": "flagged",
+        "verification_notes": "The provided text is a directory listing of many different autoservices across Slovakia, not a description of a single business. It lists numerous company names and individual names (e.g., Ján Dzurišin, Jaroslav Vozák, Radoslav Fabian, Josef Koutný), but no specific 'decision maker' can be identified for 'the' business represented by this page. Furthermore, there are no detailed 'business facts' such as specialized equipment, years of experience, awards, or unique services for any of the listed entities."
+      },
+      {
+        "original_name": "Spoľahlivé autoservisy | Zvoľte najbližšie miesto | Q-SERVICE",
+        "website": "https://www.q-service.sk/autoservisy/",
+        "business_facts": [],
+        "verification_status": "failed",
+        "verification_notes": "Could not parse AI response"
+      }
+    ]
+  },
+  "durationMs": 9900
+}

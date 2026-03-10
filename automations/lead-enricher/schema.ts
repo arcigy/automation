@@ -13,6 +13,7 @@ export type Input = z.infer<typeof inputSchema>;
 
 export type EnrichedLead = {
   original_name: string;
+  company_name_short: string;
   website: string;
   decision_maker_name?: string;
   email?: string;
