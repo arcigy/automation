@@ -20,10 +20,15 @@ Logging: PostgreSQL tabuľka automation_logs | Deploy: Railway
 - Handler: vždy handler.ts
 - Schema: vždy schema.ts
 
-## Lead Generation Tools
+## Lead Generation & Enrichment Tools
 
 - `tools/google/maps-search.tool.ts`: Vyhľadávanie na Google Maps s **rotáciou kľúčov** (3 kľúče).
 - `tools/google/serper-search.tool.ts`: Rýchly organický search.
+- `tools/scraping/web-scraper.tool.ts`: Agresívny scraper (homepage + podstránky) pre emaily a text.
+
+## Automations
+
+- `lead-enricher`: Deduplikácia podľa domény, scrape webu a AI extrakcia Decision Makera a faktov o firme s verifikáciou halucinácií.
 
 ## Ako pridať automatizáciu
 
