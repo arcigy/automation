@@ -14,10 +14,16 @@ export const inputSchema = z.object({
   // Email accounts to use (IDs)
   email_account_ids: z.array(z.number()).min(1, "At least one email account must be linked"),
 
+  // Webhooks
+  webhook_url: z.string().url().optional(),
+  webhook_events: z.array(z.string()).default(["LEAD_CATEGORY_UPDATED"]),
+
   // Settings
   daily_limit: z.number().default(50),
   min_delay_between_emails: z.number().default(5), // in minutes
   stop_on_reply: z.boolean().default(true),
+  track_open: z.boolean().default(true),
+  track_link_click: z.boolean().default(true),
   
   // Schedule
   schedule: z.object({

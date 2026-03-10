@@ -70,7 +70,9 @@ export async function handler(
     const settingsBody: any = {
       daily_limit_per_email: input.daily_limit,
       stop_on_reply: input.stop_on_reply,
-      min_delay_between_emails: input.min_delay_between_emails
+      min_delay_between_emails: input.min_delay_between_emails,
+      track_open: input.track_open,
+      track_link_click: input.track_link_click
     };
 
     if (input.schedule) {
@@ -88,6 +90,20 @@ export async function handler(
 
     if (settingsRes.status !== 200) {
       throw new Error(`Failed to update settings: ${JSON.stringify(settingsRes.data)}`);
+    }
+
+    // 5. Add Webhooks
+    if (input.webhook_url) {
+      for (const eventType of input.webhook_events) {
+        await fetchTool({
+          url: `${baseUrl}/campaigns/${campaignId}/webhooks?api_key=${apiKey}`,
+          method: "POST",
+          body: {
+            webhook_url: input.webhook_url,
+            event_type: eventType
+          }
+        });
+      }
     }
 
     const result: AutomationResult<Output> = {
