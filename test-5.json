@@ -1,0 +1,440 @@
+﻿Starting enricher test for 5 companies...
+Enriching lead: https://www.s-autoservis.sk/
+node.exe : Detailed AI parsing
+ error for https://www.s-autos
+ervis.sk/: SyntaxError: Unterm
+inated string in JSON at posit
+ion 608 (line 11 column 208)
+At line:1 char:1
++ & "C:\Program Files\nodejs/n
+ode.exe" "C:\Program Files\nod
+ejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~
+    + CategoryInfo          : 
+    NotSpecified: (Detailed   
+  AI par... 11 column 208):   
+ String) [], RemoteExcepti    
+on
+    + FullyQualifiedErrorId : 
+    NativeCommandError
+ 
+    at JSON.parse (<anonymous>
+)
+    at handler (C:\Users\laube
+\Downloads\AUTOMATIZACIE\autom
+ations\lead-enricher\handler.t
+s:72:29)
+    at process.processTicksAnd
+Rejections (node:internal/proc
+ess/task_queues:103:5)
+    at async run (C:\Users\lau
+be\Downloads\AUTOMATIZACIE\tes
+t-5-companies.ts:17:21)
+RAW AI OUTPUT: ```json
+{
+  "decision_maker_name": null,
+  "company_name_short": "S-Aut
+oservis",
+  "business_facts": [
+    "Authorized service for Vo
+lkswagen, ┼ákoda, and Seat veh
+icles.",
+    "Offers NON-STOP Mobile Se
+rvice.",
+    "Operates across five loca
+tions: Vranov nad Top─żou, Hum
+enn├ę, Michalovce, Stropkov, a
+nd Bardejov.",
+    "Provides a ┼ákoda GO! Bra
+nded car rental service."
+  ],
+  "verification_status": "flag
+ged",
+  "verification_notes": "No sp
+ecific decision-maker (owner, 
+CEO, director) could be identi
+fied from the provided website
+ content. The site mentions le
+gal entities '┼á ÔÇô AUTOSERVI
+S Vranov, s.r.o.' and '┼á ÔÇô 
+AUT
+Failed to save failed-lead htt
+ps://www.s-autoservis.sk/ to D
+B: PostgresError: password aut
+hentication failed for user "p
+ostgres"
+    at ErrorResponse (C:\Users
+\laube\Downloads\AUTOMATIZACIE
+\node_modules\postgres\cjs\src
+\connection.js:817:22)
+    at handle (C:\Users\laube\
+Downloads\AUTOMATIZACIE\node_m
+odules\postgres\cjs\src\connec
+tion.js:489:6)
+    at Socket.data (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\c
+onnection.js:324:9)
+    at Socket.emit (node:event
+s:508:28)
+    at addChunk (node:internal
+/streams/readable:559:12)
+    at readableAddChunkPushByt
+eMode (node:internal/streams/r
+eadable:510:3)
+    at Readable.push (node:int
+ernal/streams/readable:390:5)
+    at TCP.onStreamRead (node:
+internal/stream_base_commons:1
+89:23)
+    at cachedError (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\q
+uery.js:170:23)
+    at new Query (C:\Users\lau
+be\Downloads\AUTOMATIZACIE\nod
+e_modules\postgres\cjs\src\que
+ry.js:36:24)
+    at Object.sql (C:\Users\la
+ube\Downloads\AUTOMATIZACIE\no
+de_modules\postgres\cjs\src\in
+dex.js:112:11)
+    at handler (C:\Users\laube
+\Downloads\AUTOMATIZACIE\autom
+ations\lead-enricher\handler.t
+s:131:17) {
+  severity_local: 'FATAL',
+  severity: 'FATAL',
+  code: '28P01',
+  file: 'auth.c',
+  line: '329',
+  routine: 'auth_failed'
+}
+Enriching lead: https://homola.sk/
+Detailed AI parsing error for 
+https://homola.sk/: SyntaxErro
+r: Unterminated string in JSON
+ at position 94 (line 5 column
+ 6)
+    at JSON.parse (<anonymous>
+)
+    at handler (C:\Users\laube
+\Downloads\AUTOMATIZACIE\autom
+ations\lead-enricher\handler.t
+s:72:29)
+    at process.processTicksAnd
+Rejections (node:internal/proc
+ess/task_queues:103:5)
+    at async run (C:\Users\lau
+be\Downloads\AUTOMATIZACIE\tes
+t-5-companies.ts:17:21)
+RAW AI OUTPUT: ```json
+{
+  "decision_maker_name": null,
+  "company_name_short": "Homol
+a",
+  "business_facts": [
+    "
+Failed to save failed-lead htt
+ps://homola.sk/ to DB: Postgre
+sError: password authenticatio
+n failed for user "postgres"
+    at ErrorResponse (C:\Users
+\laube\Downloads\AUTOMATIZACIE
+\node_modules\postgres\cjs\src
+\connection.js:817:22)
+    at handle (C:\Users\laube\
+Downloads\AUTOMATIZACIE\node_m
+odules\postgres\cjs\src\connec
+tion.js:489:6)
+    at Socket.data (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\c
+onnection.js:324:9)
+    at Socket.emit (node:event
+s:508:28)
+    at addChunk (node:internal
+/streams/readable:559:12)
+    at readableAddChunkPushByt
+eMode (node:internal/streams/r
+eadable:510:3)
+    at Readable.push (node:int
+ernal/streams/readable:390:5)
+    at TCP.onStreamRead (node:
+internal/stream_base_commons:1
+89:23)
+    at cachedError (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\q
+uery.js:170:23)
+    at new Query (C:\Users\lau
+be\Downloads\AUTOMATIZACIE\nod
+e_modules\postgres\cjs\src\que
+ry.js:36:24)
+    at Object.sql (C:\Users\la
+ube\Downloads\AUTOMATIZACIE\no
+de_modules\postgres\cjs\src\in
+dex.js:112:11)
+    at handler (C:\Users\laube
+\Downloads\AUTOMATIZACIE\autom
+ations\lead-enricher\handler.t
+s:131:17) {
+  severity_local: 'FATAL',
+  severity: 'FATAL',
+  code: '28P01',
+  file: 'auth.c',
+  line: '329',
+  routine: 'auth_failed'
+}
+Enriching lead: https://tvojautoservis.sk/
+Failed to save lead https://tv
+ojautoservis.sk/ to DB: Postgr
+esError: password authenticati
+on failed for user "postgres"
+    at ErrorResponse (C:\Users
+\laube\Downloads\AUTOMATIZACIE
+\node_modules\postgres\cjs\src
+\connection.js:817:22)
+    at handle (C:\Users\laube\
+Downloads\AUTOMATIZACIE\node_m
+odules\postgres\cjs\src\connec
+tion.js:489:6)
+    at Socket.data (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\c
+onnection.js:324:9)
+    at Socket.emit (node:event
+s:508:28)
+    at addChunk (node:internal
+/streams/readable:559:12)
+    at readableAddChunkPushByt
+eMode (node:internal/streams/r
+eadable:510:3)
+    at Readable.push (node:int
+ernal/streams/readable:390:5)
+Enriching lead: http://www.mmautocentrum.sk/
+    at TCP.onStreamRead (node:
+internal/stream_base_commons:1
+89:23)
+    at cachedError (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\q
+uery.js:170:23)
+    at new Query (C:\Users\lau
+be\Downloads\AUTOMATIZACIE\nod
+e_modules\postgres\cjs\src\que
+ry.js:36:24)
+    at Object.sql (C:\Users\la
+ube\Downloads\AUTOMATIZACIE\no
+de_modules\postgres\cjs\src\in
+dex.js:112:11)
+    at handler (C:\Users\laube
+\Downloads\AUTOMATIZACIE\autom
+ations\lead-enricher\handler.t
+s:88:17) {
+  severity_local: 'FATAL',
+  severity: 'FATAL',
+  code: '28P01',
+  file: 'auth.c',
+  line: '329',
+  routine: 'auth_failed'
+}
+Failed to save lead http://www
+.mmautocentrum.sk/ to DB: Post
+gresError: password authentica
+tion failed for user "postgres
+"
+    at ErrorResponse (C:\Users
+\laube\Downloads\AUTOMATIZACIE
+\node_modules\postgres\cjs\src
+\connection.js:817:22)
+    at handle (C:\Users\laube\
+Downloads\AUTOMATIZACIE\node_m
+odules\postgres\cjs\src\connec
+tion.js:489:6)
+    at Socket.data (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\c
+onnection.js:324:9)
+    at Socket.emit (node:event
+s:508:28)
+    at addChunk (node:internal
+/streams/readable:559:12)
+    at readableAddChunkPushByt
+eMode (node:internal/streams/r
+eadable:510:3)
+    at Readable.push (node:int
+ernal/streams/readable:390:5)
+    at TCP.onStreamRead (node:
+internal/stream_base_commons:1
+89:23)
+    at cachedError (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\q
+uery.js:170:23)
+    at new Query (C:\Users\lau
+be\Downloads\AUTOMATIZACIE\nod
+e_modules\postgres\cjs\src\que
+ry.js:36:24)
+    at Object.sql (C:\Users\la
+ube\Downloads\AUTOMATIZACIE\no
+de_modules\postgres\cjs\src\in
+dex.js:112:11)
+    at handler (C:\Users\laube
+\Downloads\AUTOMATIZACIE\autom
+ations\lead-enricher\handler.t
+s:88:17) {
+  severity_local: 'FATAL',
+  severity: 'FATAL',
+  code: '28P01',
+  file: 'auth.c',
+  line: '329',
+  routine: 'auth_failed'
+}
+Enriching lead: http://autocentrumpetrzalka.sk/
+Detailed AI parsing error for 
+http://autocentrumpetrzalka.sk
+/: SyntaxError: Unterminated s
+tring in JSON at position 289 
+(line 7 column 46)
+    at JSON.parse (<anonymous>
+)
+    at handler (C:\Users\laube
+\Downloads\AUTOMATIZACIE\autom
+ations\lead-enricher\handler.t
+s:72:29)
+    at process.processTicksAnd
+Rejections (node:internal/proc
+ess/task_queues:103:5)
+    at async run (C:\Users\lau
+be\Downloads\AUTOMATIZACIE\tes
+t-5-companies.ts:17:21)
+RAW AI OUTPUT: ```json
+{
+  "decision_maker_name": null,
+  "company_name_short": "Autoc
+entrum Petr┼żalka",
+  "business_facts": [
+    "Pon├║kaj├║ mont├í┼ż certi
+fikovan├Żch ┼ąa┼żn├Żch zariade
+n├ş.",
+    "Vykon├ívaj├║ autodiagnost
+iku a servisn├ę prehliadky pre
+ v┼íetky typy vozidiel.",
+    "Poskytuj├║ kontrolu techn
+ick├ęho stavu voz
+Failed to save failed-lead htt
+p://autocentrumpetrzalka.sk/ t
+o DB: PostgresError: password 
+authentication failed for user
+ "postgres"
+    at ErrorResponse (C:\Users
+\laube\Downloads\AUTOMATIZACIE
+\node_modules\postgres\cjs\src
+\connection.js:817:22)
+    at handle (C:\Users\laube\
+Downloads\AUTOMATIZACIE\node_m
+odules\postgres\cjs\src\connec
+tion.js:489:6)
+    at Socket.data (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\c
+onnection.js:324:9)
+    at Socket.emit (node:event
+s:508:28)
+    at addChunk (node:internal
+/streams/readable:559:12)
+    at readableAddChunkPushByt
+eMode (node:internal/streams/r
+eadable:510:3)
+    at Readable.push (node:int
+ernal/streams/readable:390:5)
+    at TCP.onStreamRead (node:
+internal/stream_base_commons:1
+89:23)
+    at cachedError (C:\Users\l
+aube\Downloads\AUTOMATIZACIE\n
+ode_modules\postgres\cjs\src\q
+uery.js:170:23)
+    at new Query (C:\Users\lau
+be\Downloads\AUTOMATIZACIE\nod
+e_modules\postgres\cjs\src\que
+ry.js:36:24)
+    at Object.sql (C:\Users\la
+ube\Downloads\AUTOMATIZACIE\no
+de_modules\postgres\cjs\src\in
+dex.js:112:11)
+    at handler (C:\Users\laube
+\Downloads\AUTOMATIZACIE\autom
+ations\lead-enricher\handler.t
+s:131:17) {
+  severity_local: 'FATAL',
+  severity: 'FATAL',
+  code: '28P01',
+  file: 'auth.c',
+  line: '329',
+  routine: 'auth_failed'
+}
+Local DB logging skipped / fai
+led: password authentication f
+ailed for user "postgres"
+{
+  "leads": [
+    {
+      "original_name": "S-Autoservis",
+      "company_name_short": "S-Autoservis",
+      "website": "https://www.s-autoservis.sk/",
+      "business_facts": [],
+      "verification_status": "failed",
+      "verification_notes": "Could not parse AI response"
+    },
+    {
+      "original_name": "Homola.sk: V┼íetko pre autoservis",
+      "company_name_short": "Homola.sk: V┼íetko pre autoservis",
+      "website": "https://homola.sk/",
+      "business_facts": [],
+      "verification_status": "failed",
+      "verification_notes": "Could not parse AI response"
+    },
+    {
+      "original_name": "Tvojautoservis.sk: Autoservis a pneuservis",
+      "company_name_short": "Tvojautoservis",
+      "website": "https://tvojautoservis.sk/",
+      "decision_maker_name": null,
+      "email": "info@tvojautoservis.sk",
+      "business_facts": [
+        "Provides car service since 1991",
+        "Certified service for warranty work on automobiles",
+        "Equipped with the best technical equipment",
+        "Initially specialized in electronic devices for cars and equipping taxi vehicles"
+      ],
+      "verification_status": "flagged",
+      "verification_notes": "No specific decision maker name (Owner, CEO, Doctor, Founder) was found on the provided pages. Only general company information is available."
+    },
+    {
+      "original_name": "MM autocentrum, s.r.o.",
+      "company_name_short": "MM autocentrum",
+      "website": "http://www.mmautocentrum.sk/",
+      "decision_maker_name": null,
+      "email": "vas@email.com",
+      "business_facts": [
+        "Offers comprehensive autoservice including diagnostics, body work, painting, and accident repairs.",
+        "Provides a full pneuservice, including tire changes, balancing, defect repair, storage, and sales.",
+        "Features a manual car wash with three programs: BASIC, STANDARD, and COMFORT.",
+        "Offers additional services such as STK/EK/KO preparation, certified tow hitch installation, and pre-purchase vehicle inspections."
+      ],
+      "verification_status": "flagged",
+      "verification_notes": "No specific decision-maker name (e.g., Owner, CEO, Doctor, Founder) was found on the provided page content. Only general service information and contact details are listed."
+    },
+    {
+      "original_name": "AUTOCENTRUM Petr┼żalka s.r.o.",
+      "company_name_short": "AUTOCENTRUM Petr┼żalka s.r.o.",
+      "website": "http://autocentrumpetrzalka.sk/",
+      "business_facts": [],
+      "verification_status": "failed",
+      "verification_notes": "Could not parse AI response"
+    }
+  ]
+}

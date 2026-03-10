@@ -18,7 +18,7 @@ export async function fetchTool(
   const controller = new AbortController();
   const timeout = setTimeout(
     () => controller.abort(),
-    input.timeoutMs ?? 10000,
+    input.timeoutMs ?? 30000,
   );
 
   try {

@@ -41,21 +41,28 @@ export async function handler(
       const allEmails = [...new Set(scrapeResults.flatMap(r => r.emails))];
 
       // 3. AI Extraction & Verification
-      const systemPrompt = `You are a professional lead researcher. Your goal is to extract clinical/business data from scaped website text.
+      const systemPrompt = `You are a professional lead researcher and expert B2B copywriter. Your goal is to extract business data and write a WARM, AUTHENTIC personal compliment.
       
       RULES:
-      1. Identify the Name of the Decision Maker (Owner, CEO, Doctor, Founder).
-      2. Identify a few "Business Facts" that could be used for a personal compliment (e.g., specialized equipment, years of experience, specific awards, unique services).
-      3. Verify the Name: If you find multiple different names or just generic staff lists, pick the most senior one. If unsure, flag it.
-      4. Create a "company_name_short": A short, conversational version of the business name. Remove legal suffixes (s.r.o., a.s., company, inc), prefixes like 'www', or any generic overly long descriptors. If the original name is a generic agglomeration of words, look at the domain name to guess the brand name. It should sound natural in an email like "Ahoj [company_name_short],".
+      1. Identify the Full Name of the Decision Maker (Owner, CEO, Doctor, Founder).
+      2. Identify the Last Name (Priezvisko) of the Decision Maker specifically.
+      3. Identify a few "Business Facts" for a personal compliment.
+      4. Verify the Name: Pick the most senior. If unsure, flag it.
+      5. Create a "company_name_short": Conversational version (e.g., "Homola", "S-Autoservis").
+      6. Write an "icebreaker_sentence": A warm, human, and professional compliment in SLOVAK.
+         - Format: "Naozaj ma zaujalo, že [Fakt] – v dnešnej dobe je [hodnota]."
       
-      RETURN JSON FORMAT:
+      CRITICAL: RETURN ONLY VALID JSON.
+      
+      EXPECTED JSON FORMAT:
       {
-        "decision_maker_name": "string or null",
+        "decision_maker_full_name": "string or null",
+        "decision_maker_last_name": "string or null",
         "company_name_short": "string",
         "business_facts": ["fact 1", "fact 2"],
+        "icebreaker_sentence": "sentence in Slovak",
         "verification_status": "verified" | "flagged",
-        "verification_notes": "why it was flagged or why it is certain"
+        "verification_notes": "why it was flagged"
       }`;
 
       const userMessage = `Original Name: ${lead.name}\nWebsite Domain: ${lead.website}\n\nWebsite Content:\n\n${combinedText.substring(0, 15000)}`;
@@ -63,21 +70,32 @@ export async function handler(
       const aiRes = await geminiCallTool({
         systemPrompt,
         userMessage,
-        maxTokens: 1000,
+        maxTokens: 2000,
         model: "gemini-2.5-flash"
       });
 
       try {
-        const cleanedContent = aiRes.content.replace(/```json|```/g, "").trim();
-        const parsed = JSON.parse(cleanedContent);
+        const rawContent = aiRes.content.trim();
+        // More robust JSON extraction
+        const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) throw new Error("No JSON object found in AI response");
         
+        const parsed = JSON.parse(jsonMatch[0]);
+        
+        // Add leading space if last name exists, otherwise empty string
+        const lastNameWithSpace = parsed.decision_maker_last_name 
+            ? " " + parsed.decision_maker_last_name.trim() 
+            : "";
+
         const enrichedObj: EnrichedLead = {
           original_name: lead.name,
           company_name_short: parsed.company_name_short || lead.name,
           website: lead.website,
-          decision_maker_name: parsed.decision_maker_name,
+          decision_maker_name: parsed.decision_maker_full_name,
+          decision_maker_last_name: lastNameWithSpace,
           email: allEmails[0], // Take the first found email as primary
           business_facts: parsed.business_facts || [],
+          icebreaker_sentence: parsed.icebreaker_sentence,
           verification_status: parsed.verification_status || "flagged",
           verification_notes: parsed.verification_notes
         };
@@ -87,15 +105,17 @@ export async function handler(
         try {
           await sql`
             INSERT INTO leads (
-              website, original_name, company_name_short, decision_maker_name, 
-              primary_email, business_facts, verification_status, verification_notes, updated_at
+              website, original_name, company_name_short, decision_maker_name, decision_maker_last_name,
+              primary_email, business_facts, icebreaker_sentence, verification_status, verification_notes, updated_at
             ) VALUES (
               ${enrichedObj.website},
               ${enrichedObj.original_name},
               ${enrichedObj.company_name_short},
               ${enrichedObj.decision_maker_name || null},
+              ${enrichedObj.decision_maker_last_name || ""},
               ${enrichedObj.email || null},
               ${sql.json(enrichedObj.business_facts)},
+              ${enrichedObj.icebreaker_sentence || null},
               ${enrichedObj.verification_status},
               ${enrichedObj.verification_notes || null},
               now()
@@ -104,8 +124,10 @@ export async function handler(
               original_name = EXCLUDED.original_name,
               company_name_short = EXCLUDED.company_name_short,
               decision_maker_name = EXCLUDED.decision_maker_name,
+              decision_maker_last_name = EXCLUDED.decision_maker_last_name,
               primary_email = EXCLUDED.primary_email,
               business_facts = EXCLUDED.business_facts,
+              icebreaker_sentence = EXCLUDED.icebreaker_sentence,
               verification_status = EXCLUDED.verification_status,
               verification_notes = EXCLUDED.verification_notes,
               updated_at = EXCLUDED.updated_at;
@@ -121,6 +143,8 @@ export async function handler(
           original_name: lead.name,
           company_name_short: lead.name,
           website: lead.website,
+          decision_maker_name: "",
+          decision_maker_last_name: "",
           business_facts: [],
           verification_status: "failed",
           verification_notes: "Could not parse AI response"
@@ -131,11 +155,14 @@ export async function handler(
           await sql`
             INSERT INTO leads (
               website, original_name, company_name_short,
+              decision_maker_name, decision_maker_last_name,
               business_facts, verification_status, verification_notes, updated_at
             ) VALUES (
               ${failedObj.website},
               ${failedObj.original_name},
               ${failedObj.company_name_short},
+              ${failedObj.decision_maker_name || null},
+              ${failedObj.decision_maker_last_name || ""},
               ${sql.json(failedObj.business_facts)},
               ${failedObj.verification_status},
               ${failedObj.verification_notes || null},

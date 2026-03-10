@@ -16,8 +16,10 @@ export type EnrichedLead = {
   company_name_short: string;
   website: string;
   decision_maker_name?: string;
+  decision_maker_last_name?: string;
   email?: string;
   business_facts: string[];
+  icebreaker_sentence?: string;
   verification_status: "verified" | "flagged" | "failed";
   verification_notes?: string;
 };
