@@ -9,6 +9,8 @@ const envSchema = z.object({
   NOTION_API_KEY: z.string().min(1).optional(),
   SMARTLEAD_API_KEY: z.string().min(1),
   GEMINI_API_KEY: z.string().min(1),
+  SERPER_API_KEY: z.string().min(1).optional(),
+  GOOGLE_MAPS_API_KEYS: z.string().min(1).optional(), // Comma separated keys
 });
 
 export const env = envSchema.parse(process.env);

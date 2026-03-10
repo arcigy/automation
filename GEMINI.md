@@ -16,11 +16,14 @@ Logging: PostgreSQL tabuľka automation_logs | Deploy: Railway
 5. Vstup vždy validovaný cez Zod v schema.ts
 6. API odpovede vždy cez core/response.ts
 
-## Konvencie
-
 - Tools: [akcia].tool.ts
 - Handler: vždy handler.ts
 - Schema: vždy schema.ts
+
+## Lead Generation Tools
+
+- `tools/google/maps-search.tool.ts`: Vyhľadávanie na Google Maps s **rotáciou kľúčov** (3 kľúče).
+- `tools/google/serper-search.tool.ts`: Rýchly organický search.
 
 ## Ako pridať automatizáciu
 
