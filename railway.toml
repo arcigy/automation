@@ -2,7 +2,7 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "bun api/server.ts"
+startCommand = "npm start"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 
