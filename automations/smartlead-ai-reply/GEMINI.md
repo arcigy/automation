@@ -9,7 +9,8 @@ Cieľ: doviesť leada na https://www.arcigy.com/showcase kde si zarezervuje call
 ## Trigger
 
 - Typ: webhook
-- Endpoint: POST /webhook/smartlead-ai-reply
+- Endpoint (Dry-run): `POST https://automation-arcigy.up.railway.app/webhook/smartlead-ai-reply?dry_run=true`
+- Endpoint (Live): `POST https://automation-arcigy.up.railway.app/webhook/smartlead-ai-reply`
 - Event: LEAD_CATEGORY_UPDATED (kategória: Interested)
 
 ## ⚠️ Smartlead API špecifiká — KRITICKÉ

@@ -5,6 +5,7 @@
 Runtime: Bun | Framework: Hono | Language: TypeScript strict
 Database: PostgreSQL (postgres.js) | Cache: Redis (ioredis)
 Logging: PostgreSQL tabuľka automation_logs | Deploy: Railway
+**Production URL:** `https://automation-arcigy.up.railway.app`
 
 ## Pravidlá
 
