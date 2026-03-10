@@ -1,0 +1,9 @@
+{
+  "to_email": "batkova.janka@gmail.com",
+  "lead_name": "Janka Batkova",
+  "campaign_id": "2967878",
+  "category_name": "Not Interested",
+  "email_body": "Nemám záujem, prosím už mi nepíšte a vymažte ma z vašej databázy.",
+  "type": "EMAIL_REPLY",
+  "dry_run": true
+}

@@ -1,0 +1,9 @@
+{
+  "to_email": "totally-fake-email-123@xyz.com",
+  "lead_name": "Ferdinand Fiktivny",
+  "campaign_id": "8888888",
+  "category_name": "Interested",
+  "email_body": "Áno, to znie skvele, určite mi pošlite tú ukážku.",
+  "type": "EMAIL_REPLY",
+  "dry_run": true
+}

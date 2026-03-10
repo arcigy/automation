@@ -1,0 +1,10 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "bun api/server.ts"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+[[services]]
+name = "automation-api"
