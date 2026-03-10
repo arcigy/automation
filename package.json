@@ -18,5 +18,8 @@
     "@types/bun": "latest",
     "tsx": "^4.19.2",
     "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   }
 }
