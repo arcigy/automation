@@ -106,11 +106,29 @@ export async function handler(
       }
     }
 
+    // 6. Upload Leads (optional)
+    if (input.leads && input.leads.length > 0) {
+      const CHUNK_SIZE = 100;
+      for (let i = 0; i < input.leads.length; i += CHUNK_SIZE) {
+        const chunk = input.leads.slice(i, i + CHUNK_SIZE);
+        const leadRes = await fetchTool({
+          url: `${baseUrl}/campaigns/${campaignId}/leads?api_key=${apiKey}`,
+          method: "POST",
+          body: {
+            lead_list: chunk
+          }
+        });
+        if (leadRes.status !== 200 && leadRes.status !== 201) {
+          console.error(`Failed to upload lead chunk starting at index ${i}:`, leadRes.data);
+        }
+      }
+    }
+
     const result: AutomationResult<Output> = {
       success: true,
       data: {
         campaign_id: campaignId,
-        message: `Campaign '${input.name}' created and configured successfully with ${input.sequences.length} steps and ${input.email_account_ids.length} senders.`
+        message: `Campaign '${input.name}' created and configured successfully. Sequences: ${input.sequences.length}, Senders: ${input.email_account_ids.length}, Leads: ${input.leads?.length || 0}.`
       },
       durationMs: Date.now() - ctx.startTime,
     };

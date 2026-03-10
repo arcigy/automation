@@ -4,12 +4,21 @@ export const inputSchema = z.object({
   name: z.string().min(1, "Campaign name is required"),
   client_id: z.number().optional(),
   
-  // Sequence steps
+  // Sequences
   sequences: z.array(z.object({
     subject: z.string().min(1),
     body: z.string().min(1),
     delay_in_days: z.number().default(0)
-  })).min(1, "At least one sequence step is required"),
+  })).min(1),
+
+  // Leads (Optional)
+  leads: z.array(z.object({
+    email: z.string().email(),
+    first_name: z.string().optional(),
+    last_name: z.string().optional(),
+    company_name: z.string().optional(),
+    custom_fields: z.record(z.string(), z.any()).optional()
+  })).optional(),
 
   // Email accounts to use (IDs)
   email_account_ids: z.array(z.number()).min(1, "At least one email account must be linked"),
