@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serve } from "@hono/node-server";
 import { webhookRoutes } from "./routes/webhook";
 import { triggerRoutes } from "./routes/trigger";
 import { authMiddleware } from "./middleware/auth";
@@ -19,4 +20,11 @@ app.route("/trigger", triggerRoutes);
 
 app.get("/health", (c) => c.json({ status: "ok" }));
 
-export default { port: process.env.PORT ?? 3000, fetch: app.fetch };
+const port = Number(process.env.PORT) || 3000;
+console.log(`Server is running on port ${port}`);
+
+serve({
+  fetch: app.fetch,
+  port,
+  hostname: '0.0.0.0'
+});
