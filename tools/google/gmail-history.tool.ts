@@ -89,6 +89,73 @@ export async function fetchGmailHistory(leadEmail: string, senderEmail: string):
   }
 }
 
+export async function fetchThreadHistory(threadId: string, senderEmail: string): Promise<GmailMessage[]> {
+  const tokenKey = `GMAIL_REFRESH_TOKEN_${senderEmail.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+  const refreshToken = (process.env as any)[tokenKey];
+
+  if (!refreshToken) {
+    console.warn(`⚠️ No refresh token found for ${senderEmail} (key: ${tokenKey})`);
+    return [];
+  }
+
+  const oauth2Client = new google.auth.OAuth2(
+    env.GOOGLE_CLIENT_ID,
+    env.GOOGLE_CLIENT_SECRET,
+    env.GOOGLE_REDIRECT_URI
+  );
+
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  try {
+    const response = await gmail.users.threads.get({
+      userId: "me",
+      id: threadId,
+      format: "full",
+    });
+
+    if (!response.data.messages || response.data.messages.length === 0) {
+      return [];
+    }
+
+    const messages: GmailMessage[] = [];
+
+    for (const msg of response.data.messages) {
+      const headers = msg.payload?.headers || [];
+      const subject = headers.find((h) => h.name === "Subject")?.value || "";
+      const from = headers.find((h) => h.name === "From")?.value || "";
+      const to = headers.find((h) => h.name === "To")?.value || "";
+      const date = headers.find((h) => h.name === "Date")?.value || "";
+
+      let body = "";
+      const parts = msg.payload?.parts || [];
+      const part = parts.find((p) => p.mimeType === "text/plain") || parts[0];
+      
+      if (part && part.body?.data) {
+        body = Buffer.from(part.body.data, "base64").toString("utf-8");
+      } else if (msg.payload?.body?.data) {
+        body = Buffer.from(msg.payload.body.data, "base64").toString("utf-8");
+      }
+
+      body = body.replace(/<[^>]*>?/gm, '').trim();
+
+      messages.push({
+        subject,
+        from,
+        to,
+        date,
+        body,
+        isMe: from.toLowerCase().includes(senderEmail.toLowerCase()),
+      });
+    }
+
+    return messages.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  } catch (error: any) {
+    console.error(`❌ Gmail API error fetching thread for ${senderEmail}:`, error.message);
+    return [];
+  }
+}
+
 export interface UnreadMessage {
   id: string;
   threadId: string;

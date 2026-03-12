@@ -3,7 +3,7 @@ import { inputSchema, type Input, type Output } from './schema';
 import { logRun } from '../../core/logger';
 import type { AutomationContext, AutomationResult } from '../../core/types';
 import { sql, isSystemActive } from '../../core/db';
-import { fetchUnreadInboxMessages, sendGmailReply, fetchGmailHistory } from '../../tools/google/gmail-history.tool';
+import { fetchUnreadInboxMessages, sendGmailReply, fetchThreadHistory } from '../../tools/google/gmail-history.tool';
 import { geminiCallTool } from '../../tools/ai/gemini-call.tool';
 
 const SENDER_EMAILS = [
@@ -67,9 +67,16 @@ export async function handler(rawInput: unknown): Promise<AutomationResult<Outpu
           const lead = leads[0];
           console.log(`🔍 Analyzujem správu od leada ${fromEmail} [MsgID: ${msg.id}]`);
 
-          // Fetch full history
-          const history = await fetchGmailHistory(fromEmail, senderEmail);
+          // Fetch full history of this specific thread
+          const history = await fetchThreadHistory(msg.threadId, senderEmail);
 
+          // Thread Validation Check
+          if (history.length > 0 && !history[0].isMe) {
+            console.log(`ℹ️ Preskakujem: Konverzáciu sme nezačali my (lead napísal sám od seba, mimo cold emailovej nite).`);
+            if (!input.dry_run) await markProcessed(msg.id);
+            out.skipped++;
+            continue;
+          }
           // Human-in-the-loop check
           const leadMessages = history.filter((m: any) => !m.isMe);
           if (leadMessages.length > 0) {
