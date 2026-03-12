@@ -115,6 +115,14 @@ export async function runMigrations() {
     );
   `;
 
+  // 7. Processed Gmail Messages (For Polling)
+  await sql`
+    CREATE TABLE IF NOT EXISTS processed_gmail_messages (
+      message_id TEXT PRIMARY KEY,
+      processed_at TIMESTAMPTZ DEFAULT now()
+    );
+  `;
+
   // Initial values
   await sql`INSERT INTO system_settings (key, value) VALUES ('leadgen_active', true) ON CONFLICT (key) DO NOTHING;`;
   await sql`INSERT INTO system_settings (key, value) VALUES ('ai_replies_active', true) ON CONFLICT (key) DO NOTHING;`;

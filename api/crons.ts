@@ -3,6 +3,7 @@ import { handler as dailyLeadgen } from "../automations/daily-leadgen/handler";
 import { handler as dailyReport } from "../automations/daily-report/handler";
 import { handler as eveningSummary } from "../automations/evening-summary/handler";
 import { handler as manualReviewPickup } from "../automations/manual-review-pickup/handler";
+import { handler as gmailAiReply } from "../automations/gmail-ai-reply/handler";
 
 export function initCrons() {
   console.log("⏰ Inicializujem Cron plány...");
@@ -54,6 +55,19 @@ export function initCrons() {
       console.log("✅ [CRON 09:00] Manual Review Pickup úspešne dokončený.");
     } catch (err) {
       console.error("💥 [CRON 09:00] Manual Review Pickup zlyhal:", err);
+    }
+  }, {
+    timezone: "Europe/Bratislava"
+  });
+
+  // 4. Gmail AI Reply Polling — každých 10 minút
+  cron.schedule("*/10 * * * *", async () => {
+    console.log("📬 [CRON */10] Spúšťam Gmail AI Reply Polling...");
+    try {
+      await gmailAiReply({});
+      console.log("✅ [CRON */10] Gmail AI Reply Polling úspešne dokončený.");
+    } catch (err) {
+      console.error("💥 [CRON */10] Gmail AI Reply Polling zlyhal:", err);
     }
   }, {
     timezone: "Europe/Bratislava"
