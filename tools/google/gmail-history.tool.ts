@@ -300,3 +300,66 @@ export async function sendGmailReply(
     throw error;
   }
 }
+
+export async function ensureLabelExists(senderEmail: string, labelName: string): Promise<string> {
+  const tokenKey = `GMAIL_REFRESH_TOKEN_${senderEmail.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+  const refreshToken = (process.env as any)[tokenKey];
+
+  if (!refreshToken) throw new Error(`No token for ${senderEmail}`);
+
+  const oauth2Client = new google.auth.OAuth2(
+    env.GOOGLE_CLIENT_ID,
+    env.GOOGLE_CLIENT_SECRET,
+    env.GOOGLE_REDIRECT_URI
+  );
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  try {
+    const list = await gmail.users.labels.list({ userId: "me" });
+    const existing = list.data.labels?.find(l => l.name === labelName);
+    
+    if (existing) return existing.id!;
+
+    // Create label if not exists
+    const res = await gmail.users.labels.create({
+      userId: "me",
+      requestBody: {
+        name: labelName,
+        labelListVisibility: "labelShow",
+        messageListVisibility: "show"
+      }
+    });
+    return res.data.id!;
+  } catch (error: any) {
+    console.error(`❌ Error ensuring label ${labelName} for ${senderEmail}:`, error.message);
+    throw error;
+  }
+}
+
+export async function addLabelToThread(senderEmail: string, threadId: string, labelId: string): Promise<void> {
+  const tokenKey = `GMAIL_REFRESH_TOKEN_${senderEmail.toUpperCase().replace(/[^A-Z0-9]/g, '_')}`;
+  const refreshToken = (process.env as any)[tokenKey];
+
+  if (!refreshToken) throw new Error(`No token for ${senderEmail}`);
+
+  const oauth2Client = new google.auth.OAuth2(
+    env.GOOGLE_CLIENT_ID,
+    env.GOOGLE_CLIENT_SECRET,
+    env.GOOGLE_REDIRECT_URI
+  );
+  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  const gmail = google.gmail({ version: "v1", auth: oauth2Client });
+
+  try {
+    await gmail.users.threads.modify({
+      userId: "me",
+      id: threadId,
+      requestBody: {
+        addLabelIds: [labelId]
+      }
+    });
+  } catch (error: any) {
+    console.error(`❌ Error adding label to thread ${threadId} for ${senderEmail}:`, error.message);
+  }
+}

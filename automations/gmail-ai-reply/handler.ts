@@ -3,7 +3,7 @@ import { inputSchema, type Input, type Output } from './schema';
 import { logRun } from '../../core/logger';
 import type { AutomationContext, AutomationResult } from '../../core/types';
 import { sql, isSystemActive } from '../../core/db';
-import { fetchUnreadInboxMessages, sendGmailReply, fetchThreadHistory } from '../../tools/google/gmail-history.tool';
+import { fetchUnreadInboxMessages, sendGmailReply, fetchThreadHistory, ensureLabelExists, addLabelToThread } from '../../tools/google/gmail-history.tool';
 import { geminiCallTool } from '../../tools/ai/gemini-call.tool';
 
 const SENDER_EMAILS = [
@@ -76,6 +76,17 @@ export async function handler(rawInput: unknown): Promise<AutomationResult<Outpu
             if (!input.dry_run) await markProcessed(msg.id);
             out.skipped++;
             continue;
+          }
+
+          // KROK: Pridanie labelu COLD-OUTREACH (ak sme v produkcii)
+          if (!input.dry_run) {
+            try {
+              const labelId = await ensureLabelExists(senderEmail, 'COLD-OUTREACH');
+              await addLabelToThread(senderEmail, msg.threadId, labelId);
+              console.log(`🏷️ Pridaný label COLD-OUTREACH k vláknu ${msg.threadId}`);
+            } catch (labelError) {
+              console.warn(`⚠️ Nepodarilo sa pridať label:`, labelError);
+            }
           }
           // Human-in-the-loop check
           const leadMessages = history.filter((m: any) => !m.isMe);
