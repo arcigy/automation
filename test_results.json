@@ -1,0 +1,72 @@
+[
+  {
+    "scenario": "1. Jasný záujem",
+    "leadMessage": "Dobrý deň, to znie super. Pošlite mi prosím tú ukážku.",
+    "status": "AI_REPLIED",
+    "category": "POSITIVE",
+    "aiReply": "Dobrý deň,\nďakujem za Váš záujem o naše automatizácie. Tu je sľúbená ukážka:<br><br>\n<"
+  },
+  {
+    "scenario": "2. Odmietnutie (Negatívne)",
+    "leadMessage": "Nemám záujem, vymažte ma.",
+    "status": "SKIP (NEGATIVE)",
+    "category": "NEGATIVE",
+    "aiReply": ""
+  },
+  {
+    "scenario": "3. Otázka na cenu (Pozitívne)",
+    "leadMessage": "Zaujímavé. Koľko takéto niečo stojí? Môžete mi poslať viac info?",
+    "status": "AI_REPLIED",
+    "category": "POSITIVE",
+    "aiReply": "Dobrý deň pán/pani Molnár,<br><br>\nSom rád, že Vás naša ponuka zaujala a rád Vám poskytnem podrobnejšie informácie o"
+  },
+  {
+    "scenario": "4. Už bolo poslané (Already Sent)",
+    "leadMessage": "Viete mi to poslať ešte raz? Stratil som ten link.",
+    "status": "SKIP (Stopka - detegovaná manuálna odpoveď)",
+    "category": "",
+    "aiReply": ""
+  },
+  {
+    "scenario": "5. Human Check (Stopka) - Manuálna odpoveď",
+    "leadMessage": "Môžete mi to poslať?",
+    "status": "SKIP (Stopka - detegovaná manuálna odpoveď)",
+    "category": "",
+    "aiReply": ""
+  },
+  {
+    "scenario": "6. Followup situácia (Nespúšťa stopku)",
+    "leadMessage": "Jasné, pošlite.",
+    "status": "AI_REPLIED",
+    "category": "POSITIVE",
+    "aiReply": "Dobrý deň pán/pani Nagy,<br><br>\nĎakujem Vám za odpoveď. Ako ste si vyžiadali, tu je ukážka našej"
+  },
+  {
+    "scenario": "7. Technická otázka (Neutrálne)",
+    "leadMessage": "Používate na to Make alebo Python?",
+    "status": "SKIP (NEUTRAL)",
+    "category": "NEUTRAL",
+    "aiReply": ""
+  },
+  {
+    "scenario": "8. Out of Office",
+    "leadMessage": "I am out of office until next Monday. Please contact my colleague.",
+    "status": "SKIP (NEUTRAL)",
+    "category": "NEUTRAL",
+    "aiReply": ""
+  },
+  {
+    "scenario": "9. Žiadosť o hovor",
+    "leadMessage": "Môžeme si o tom zavolať v utorok? Alebo mi pošlite nejaké podklady vopred.",
+    "status": "AI_REPLIED",
+    "category": "POSITIVE",
+    "aiReply": "Dobrý deň pán/pani Krajčír,<br><br>\nĎakujem za Vašu odpoveď a návrh na utorok. Rád Vám"
+  },
+  {
+    "scenario": "10. Odpoveď kolegovi",
+    "leadMessage": "Pošlite to radšej mojim kolegom na info@firma.sk, oni to riešia.",
+    "status": "AI_REPLIED",
+    "category": "POSITIVE",
+    "aiReply": "Dobrý deň,<br><br>\nĎakujem za nasmerovanie. Rád pošlem ukážku našej práce na info@firma.sk, ako ste nav"
+  }
+]

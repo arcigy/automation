@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arcigy CRM v4.0 — Lead Management</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #0b0c10;
+            --surface-color: #1a1c23;
+            --accent-color: #7d5fff;
+            --accent-hover: #6c4af5;
+            --text-color: #e0e0e0;
+            --text-dim: #94a3b8;
+            --border-color: #2d3748;
+            --success-color: #00d2ad;
+            --danger-color: #ff4d4d;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        header {
+            padding: 0.75rem 1.5rem;
+            background: rgba(26, 28, 35, 0.95);
+            backdrop-filter: blur(15px);
+            border-bottom: 2px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+        }
+
+        .logo { font-weight: 800; color: var(--accent-color); font-size: 1.3rem; letter-spacing: -0.02em; }
+        .status-badge { font-size: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 20px; background: rgba(125, 95, 255, 0.1); color: var(--accent-color); border: 1px solid rgba(125, 95, 255, 0.3); font-weight: 600; }
+
+        main { flex: 1; overflow: auto; background: #000; position: relative; }
+        .table-container { min-width: 100%; display: inline-block; padding-bottom: 100px; }
+
+        table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 0.85rem; table-layout: fixed; }
+        thead { position: sticky; top: 0; background: var(--surface-color); z-index: 50; }
+        th { text-align: left; padding: 0.8rem 1rem; border-bottom: 2px solid var(--border-color); border-right: 1px solid var(--border-color); color: var(--text-dim); font-weight: 700; text-transform: uppercase; font-size: 0.7rem; letter-spacing: 0.08em; }
+        td { padding: 0.7rem 1rem; border-bottom: 1px solid var(--border-color); border-right: 1px solid rgba(45, 55, 72, 0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; background: var(--bg-color); transition: all 0.2s; position: relative; }
+        
+        tr:hover td { background: #16181d; }
+        tr.active-row td { background: rgba(125, 95, 255, 0.12) !important; color: #fff; }
+        tr.active-row td::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--accent-color); z-index: 5; }
+
+        .editable { cursor: pointer; }
+        .editable:empty::after { content: '---'; opacity: 0.15; font-style: italic; }
+        .editable:focus { 
+            outline: 3px solid var(--accent-color); 
+            background: #1a1c23 !important; 
+            white-space: normal; 
+            z-index: 60; 
+            position: relative; 
+            overflow: visible; 
+            min-width: 300px;
+            padding: 1rem;
+            box-shadow: 0 15px 40px rgba(0,0,0,0.8);
+            border-radius: 4px;
+        }
+
+        .link-cell a { color: var(--accent-color); text-decoration: none; font-weight: 600; padding: 4px 8px; border-radius: 4px; background: rgba(125, 95, 255, 0.05); transition: 0.2s; }
+        .link-cell a:hover { background: var(--accent-color); color: #000; }
+
+        .tag { padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.65rem; background: var(--border-color); color: var(--text-color); font-weight: 700; text-transform: uppercase; }
+        .tag-verified { background: rgba(0, 210, 173, 0.2); color: var(--success-color); }
+
+        footer { height: 50px; background: var(--surface-color); border-top: 2px solid var(--border-color); display: flex; align-items: center; padding: 0; z-index: 100; overflow-x: auto; scrollbar-width: none; }
+        .tabs { display: flex; height: 100%; }
+        .tab { padding: 0 1.8rem; height: 100%; display: flex; align-items: center; cursor: pointer; border-right: 1px solid var(--border-color); font-size: 0.9rem; color: var(--text-dim); white-space: nowrap; transition: 0.3s; font-weight: 600; }
+        .tab:hover { background: rgba(255,255,255,0.03); color: #fff; }
+        .tab.active { background: var(--bg-color); color: var(--accent-color); border-bottom: 4px solid var(--accent-color); }
+
+        .btn-delete { color: var(--danger-color); cursor: pointer; font-weight: 800; font-size: 1.4rem; text-align: center; width: 50px; transition: 0.3s; background: rgba(255, 77, 77, 0.05); z-index: 10; }
+        .btn-delete:hover { background: var(--danger-color); color: white; transform: rotate(90deg); }
+
+        #notif { position: fixed; bottom: 70px; right: 30px; padding: 1.2rem 2.5rem; border-radius: 12px; background: var(--accent-color); color: #fff; font-weight: 700; transform: translateY(250px); transition: 0.5s cubic-bezier(0.19, 1, 0.22, 1); z-index: 1000; box-shadow: 0 15px 50px rgba(0,0,0,0.7); display: flex; align-items: center; gap: 0.8rem; }
+        #notif::before { content: '⚡'; }
+        #notif.show { transform: translateY(0); }
+
+        /* Columns */
+        .col-del { width: 50px; }
+        .col-web { width: 220px; }
+        .col-ico { width: 120px; }
+        .col-company { width: 240px; }
+        .col-dm { width: 140px; }
+        .col-dm-last { width: 140px; }
+        .col-email { width: 220px; }
+        .col-ice { width: 450px; }
+        .col-stat { width: 100px; }
+
+        .is-empty { background: rgba(255, 77, 77, 0.03) !important; }
+        .pasting { background: rgba(0, 210, 173, 0.1) !important; }
+        
+        #loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); display: none; z-index: 2000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
+        .spinner { width: 40px; height: 40px; border: 4px solid rgba(125, 95, 255, 0.2); border-top: 4px solid var(--accent-color); border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    </style>
+</head>
+<body>
+
+    <div id="loading-overlay"><div class="spinner"></div></div>
+
+    <header>
+        <div class="logo">ARCIGY CRM <span style="font-size: 0.8rem; opacity: 0.4; font-weight: 500;">v4.0 Pro</span></div>
+        <div style="display: flex; align-items: center; gap: 1.5rem;">
+            <div style="display: flex; position: relative; align-items: center;">
+                <input type="text" id="search" placeholder="Hľadať v leadov..." style="padding: 0.6rem 1.2rem; border-radius: 10px; border: 2px solid var(--border-color); background: #000; color: white; font-size: 0.9rem; outline: none; width: 300px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); transition: 0.2s;">
+            </div>
+            <div id="loading-txt" style="display: none; font-size: 0.85rem; color: var(--accent-color); font-weight: 800; animation: pulse 1s infinite;">SYNCING DATABASE...</div>
+            <div class="status-badge" id="niche-title">Vyberte Niche</div>
+        </div>
+    </header>
+
+    <main id="main-content">
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th class="col-del">X</th>
+                        <th class="col-web">Webstránka</th>
+                        <th class="col-ico">IČO (OP)</th>
+                        <th class="col-company">Firma (ORSR)</th>
+                        <th class="col-dm">Meno DM</th>
+                        <th class="col-dm-last">Priezvisko DM</th>
+                        <th class="col-email">Email</th>
+                        <th class="col-ice">Icebreaker Sentence</th>
+                        <th class="col-stat">Status</th>
+                    </tr>
+                </thead>
+                <tbody id="lead-table-body">
+                    <tr><td colspan="9" style="text-align:center; padding: 6rem; color: var(--text-dim); font-size: 1.1rem;">Načítavam vašu prácu...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </main>
+
+    <footer>
+        <div class="tabs" id="niche-tabs"></div>
+    </footer>
+
+    <div id="notif">Uložené!</div>
+
+    <script>
+        let currentNicheId = null;
+        let allLeads = [];
+
+        async function fetchNiches() {
+            try {
+                const res = await fetch('/api/crm/niches');
+                const json = await res.json();
+                const tabsContainer = document.getElementById('niche-tabs');
+                tabsContainer.innerHTML = '';
+                
+                if (!json.data || json.data.length === 0) {
+                    tabsContainer.innerHTML = '<div class="tab">Žiadne niches</div>';
+                    return;
+                }
+
+                json.data.forEach((niche, index) => {
+                    const tab = document.createElement('div');
+                    tab.className = 'tab';
+                    tab.innerText = niche.name;
+                    tab.onclick = () => loadNiche(niche.id, niche.name, tab);
+                    tabsContainer.appendChild(tab);
+                    if (index === 0) loadNiche(niche.id, niche.name, tab);
+                });
+            } catch (err) { console.error("Niche loading failed", err); }
+        }
+
+        async function loadNiche(id, name, tabEl) {
+            currentNicheId = id;
+            document.getElementById('niche-title').innerText = name;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            tabEl.classList.add('active');
+            
+            document.getElementById('lead-table-body').innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 6rem; font-weight: 500;">Ťahám leady z databázy...</td></tr>';
+            
+            try {
+                const res = await fetch(`/api/crm/leads/${id}`);
+                const json = await res.json();
+                allLeads = json.data || [];
+                renderLeads(allLeads);
+            } catch (err) { console.error("Lead loading failed", err); }
+        }
+
+        function renderLeads(leads) {
+            const body = document.getElementById('lead-table-body');
+            body.innerHTML = '';
+            
+            if (leads.length === 0) {
+                body.innerHTML = '<tr><td colspan="9" style="text-align:center; padding: 6rem;">Žiadne leady v tejto sekcii.</td></tr>';
+                return;
+            }
+
+            leads.forEach((l) => {
+                const tr = document.createElement('tr');
+                tr.id = `row-${l.id}`;
+                tr.onclick = (e) => {
+                    if (e.target.tagName !== 'TD' && e.target.tagName !== 'A' && e.target.contentEditable !== 'true') return;
+                    document.querySelectorAll('tr').forEach(r => r.classList.remove('active-row'));
+                    tr.classList.add('active-row');
+                };
+
+                tr.innerHTML = `
+                    <td class="col-del btn-delete" title="Vymazať lead natrvalo">×</td>
+                    <td class="col-web link-cell"><a href="${l.website}" target="_blank" onclick="highlightRow('${l.id}')">${l.website.replace(/^https?:\/\//, '').substring(0, 30)}</a></td>
+                    <td class="editable col-ico ${!l.ico ? 'is-empty' : ''}" contenteditable="true" data-id="${l.id}" data-field="ico">${l.ico || ''}</td>
+                    <td class="editable col-company ${!l.official_company_name ? 'is-empty' : ''}" contenteditable="true" data-id="${l.id}" data-field="official_company_name">${l.official_company_name || ''}</td>
+                    <td class="editable col-dm ${!l.decision_maker_name ? 'is-empty' : ''}" contenteditable="true" data-id="${l.id}" data-field="decision_maker_name">${l.decision_maker_name || ''}</td>
+                    <td class="editable col-dm-last ${!l.decision_maker_last_name ? 'is-empty' : ''}" contenteditable="true" data-id="${l.id}" data-field="decision_maker_last_name">${l.decision_maker_last_name || ''}</td>
+                    <td class="editable col-email ${!l.primary_email ? 'is-empty' : ''}" contenteditable="true" data-id="${l.id}" data-field="primary_email">${l.primary_email || ''}</td>
+                    <td class="editable col-ice" contenteditable="true" data-id="${l.id}" data-field="icebreaker_sentence">${l.icebreaker_sentence || ''}</td>
+                    <td class="col-stat"><span class="tag ${l.verification_status === 'verified' ? 'tag-verified' : ''}">${l.verification_status || 'new'}</span></td>
+                `;
+                
+                tr.querySelector('.btn-delete').onclick = (e) => {
+                    e.stopPropagation();
+                    deleteLead(l.id, tr);
+                };
+                
+                body.appendChild(tr);
+            });
+
+            setupEditables();
+        }
+
+        function highlightRow(id) {
+            document.querySelectorAll('tr').forEach(r => r.classList.remove('active-row'));
+            const row = document.getElementById(`row-${id}`);
+            if (row) row.classList.add('active-row');
+        }
+
+        function setupEditables() {
+            document.querySelectorAll('.editable').forEach(cell => {
+                cell.onfocus = () => { 
+                    cell.dataset.oldValue = cell.innerText.trim();
+                    highlightRow(cell.dataset.id);
+                };
+                cell.onblur = () => { 
+                    const val = cell.innerText.trim();
+                    if (val !== cell.dataset.oldValue) saveCell(cell);
+                };
+                cell.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); cell.blur(); } };
+                
+                // Click-to-paste logic (improved)
+                cell.onclick = async (e) => {
+                    if (cell.innerText.trim() === '') {
+                        try {
+                            const text = await navigator.clipboard.readText();
+                            if (text && text.trim().length >= 4) {
+                                cell.classList.add('pasting');
+                                cell.innerText = text.trim();
+                                await saveCell(cell);
+                                cell.classList.remove('pasting');
+                            }
+                        } catch (err) {}
+                    }
+                }
+            });
+        }
+
+        async function saveCell(cell) {
+            const id = cell.dataset.id;
+            const field = cell.dataset.field;
+            const val = cell.innerText.trim();
+            
+            document.getElementById('loading-txt').style.display = 'inline-block';
+            
+            try {
+                const isSpecial = field === 'ico' || field === 'official_company_name';
+                const res = await fetch(`/api/crm/leads/${id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ [field]: val })
+                });
+                
+                if (res.ok) {
+                    showNotif(isSpecial ? "Uložené! Spúšťam ORSR Enrichment..." : "Zmena uložená!");
+                    if (isSpecial && val.length > 5) {
+                        // Delay and reload to see results from background scraper
+                        setTimeout(() => loadNiche(currentNicheId, document.getElementById('niche-title').innerText, document.querySelector('.tab.active')), 4500);
+                    }
+                } else {
+                    alert("Nepodarilo sa uložiť zmenu. Skúste to prosím znova.");
+                    cell.innerText = cell.dataset.oldValue;
+                }
+            } catch (err) {
+                console.error(err);
+                alert("Výpadok spojenia so serverom.");
+                cell.innerText = cell.dataset.oldValue;
+            } finally {
+                document.getElementById('loading-txt').style.display = 'none';
+            }
+        }
+
+        async function deleteLead(leadId, row) {
+            if (!confirm('Toto natrvalo zmaže lead z databázy. Pokračovať?')) return;
+            
+            // Visual feedback
+            row.style.opacity = '0.3';
+            row.style.background = '#300';
+            
+            try {
+                const url = `/api/crm/leads/${encodeURIComponent(leadId)}`;
+                const res = await fetch(url, { method: 'DELETE' });
+                
+                if (res.ok) {
+                    row.remove();
+                    showNotif("Lead úspešne odstránený.");
+                } else {
+                    const errorData = await res.json();
+                    row.style.opacity = '1';
+                    row.style.background = '';
+                    alert(`Chyba pri mazaní: ${errorData.error || "Neznámy problém"}`);
+                }
+            } catch (err) {
+                row.style.opacity = '1';
+                row.style.background = '';
+                alert("Nepodarilo sa spojiť so serverom.");
+                console.error(err);
+            }
+        }
+
+        function showNotif(msg) {
+            const n = document.getElementById('notif');
+            n.innerText = msg;
+            n.classList.add('show');
+            setTimeout(() => n.classList.remove('show'), 3500);
+        }
+
+        document.getElementById('search').oninput = (e) => {
+            const q = e.target.value.toLowerCase();
+            const filt = allLeads.filter(l => 
+                l.website.toLowerCase().includes(q) || 
+                (l.official_company_name || '').toLowerCase().includes(q) ||
+                (l.ico || '').toLowerCase().includes(q) ||
+                (l.decision_maker_name || '').toLowerCase().includes(q) ||
+                (l.decision_maker_last_name || '').toLowerCase().includes(q)
+            );
+            renderLeads(filt);
+        };
+
+        // Init
+        fetchNiches();
+    </script>
+</body>
+</html>

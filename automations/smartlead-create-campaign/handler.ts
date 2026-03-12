@@ -4,6 +4,7 @@ import type { AutomationResult } from "../../core/types";
 import { randomUUID } from "crypto";
 import { env } from "../../core/env";
 import { fetchTool } from "../../tools/http/fetch.tool";
+import { smartleadGenerateSequencesTool } from "../../tools/smartlead/generate-sequences.tool";
 
 export async function handler(
   rawInput: unknown,
@@ -19,7 +20,46 @@ export async function handler(
   const apiKey = env.SMARTLEAD_API_KEY;
 
   try {
-    // 1. Create Campaign
+    // 1. Determine Sequences (AI or manual)
+    let finalSequences: any[] = [];
+
+    if (input.generateAiSequences) {
+        console.log(`🤖 Generating AI sequences for niche: ${input.name}...`);
+        const aiSeqs = await smartleadGenerateSequencesTool({
+            nicheName: input.name,
+            nicheDescription: input.nicheDescription,
+            customInstructions: input.customAiInstructions
+        });
+        
+        // Map to Smartlead's expected structure (variants)
+        finalSequences = aiSeqs.map((s: any) => ({
+            seq_number: s.seq_number,
+            seq_delay_details: s.seq_delay_details,
+            seq_variants: s.seq_variants.map((v: any) => ({
+                variant_label: v.variant_label,
+                subject: v.subject,
+                email_body: v.email_body
+            }))
+        }));
+    } else if (input.sequences) {
+        // Map simple input structure to Smartlead's verbose structure
+        finalSequences = input.sequences.map((s, idx) => ({
+            seq_number: idx + 1,
+            seq_delay_details: { delay_in_days: s.delay_in_days },
+            seq_variants: [
+                {
+                    variant_label: "A",
+                    subject: s.subject || "",
+                    email_body: s.body
+                }
+            ]
+        }));
+    } else {
+        throw new Error("Either 'sequences' or 'generateAiSequences: true' must be provided.");
+    }
+
+    // 2. Create Campaign
+    console.log(`🚀 Creating campaign: ${input.name}...`);
     const createRes = await fetchTool({
       url: `${baseUrl}/campaigns/create?api_key=${apiKey}`,
       method: "POST",
@@ -35,25 +75,20 @@ export async function handler(
 
     const campaignId = (createRes.data as any).id;
 
-    // 2. Add Sequences
+    // 3. Add Sequences (Verified Structure)
+    console.log(`📝 Adding ${finalSequences.length} sequences...`);
     const sequenceRes = await fetchTool({
       url: `${baseUrl}/campaigns/${campaignId}/sequences?api_key=${apiKey}`,
       method: "POST",
-      body: {
-        seq: input.sequences.map((s, index) => ({
-          order: index + 1,
-          subject: s.subject,
-          body: s.body,
-          delay_in_days: s.delay_in_days
-        }))
-      }
+      body: { sequences: finalSequences }
     });
 
     if (sequenceRes.status !== 200) {
       throw new Error(`Failed to add sequences: ${JSON.stringify(sequenceRes.data)}`);
     }
 
-    // 3. Link Email Accounts
+    // 4. Link Email Accounts
+    console.log(`🔗 Linking ${input.email_account_ids.length} email accounts...`);
     const linkRes = await fetchTool({
       url: `${baseUrl}/campaigns/${campaignId}/email-accounts?api_key=${apiKey}`,
       method: "POST",
@@ -66,61 +101,65 @@ export async function handler(
       throw new Error(`Failed to link email accounts: ${JSON.stringify(linkRes.data)}`);
     }
 
-    // 4. Update Settings & Schedule
-    const settingsBody: any = {
-      daily_limit_per_email: input.daily_limit,
-      stop_on_reply: input.stop_on_reply,
-      min_delay_between_emails: input.min_delay_between_emails,
-      track_open: input.track_open,
-      track_link_click: input.track_link_click
+    // 5. Update Schedule
+    console.log(`⏰ Setting schedule...`);
+    const scheduleBody = {
+      timezone: input.schedule?.timezone || "Europe/Bratislava",
+      start_hour: input.schedule?.start_hour || "08:00",
+      end_hour: input.schedule?.end_hour || "18:00",
+      days_of_the_week: input.schedule?.days || [1, 2, 3, 4, 5],
+      max_new_leads_per_day: input.daily_limit,
+      min_time_btw_emails: input.min_delay_between_emails,
+      schedule_start_time: null
     };
 
-    if (input.schedule) {
-      settingsBody.timezone = input.schedule.timezone;
-      settingsBody.start_hour = input.schedule.start_hour;
-      settingsBody.end_hour = input.schedule.end_hour;
-      settingsBody.days_of_the_week = input.schedule.days;
-    }
-
-    const settingsRes = await fetchTool({
-      url: `${baseUrl}/campaigns/${campaignId}/settings?api_key=${apiKey}`,
-      method: "PATCH",
-      body: settingsBody
+    await fetchTool({
+      url: `${baseUrl}/campaigns/${campaignId}/schedule?api_key=${apiKey}`,
+      method: "POST",
+      body: scheduleBody
     });
 
-    if (settingsRes.status !== 200) {
-      throw new Error(`Failed to update settings: ${JSON.stringify(settingsRes.data)}`);
-    }
-
-    // 5. Add Webhooks
-    if (input.webhook_url) {
-      for (const eventType of input.webhook_events) {
-        await fetchTool({
-          url: `${baseUrl}/campaigns/${campaignId}/webhooks?api_key=${apiKey}`,
-          method: "POST",
-          body: {
-            webhook_url: input.webhook_url,
-            event_type: eventType
-          }
-        });
+    // 6. Update Settings
+    console.log(`⚙️ Setting settings...`);
+    await fetchTool({
+      url: `${baseUrl}/campaigns/${campaignId}/settings?api_key=${apiKey}`,
+      method: "PATCH",
+      body: {
+        track_settings: input.track_open ? [] : ["DONT_TRACK_EMAIL_OPEN"],
+        stop_lead_settings: input.stop_on_reply ? "REPLY_TO_AN_EMAIL" : "NEVER_STOP",
+        follow_up_percentage: 100
       }
+    });
+
+    // 7. Add Webhooks
+    if (input.webhook_url) {
+      console.log(`🔔 Adding webhook: ${input.webhook_url}`);
+      await fetchTool({
+        url: `${baseUrl}/campaigns/${campaignId}/webhooks?api_key=${apiKey}`,
+        method: "POST",
+        body: {
+          id: null,
+          name: `Automation Webhook`,
+          webhook_url: input.webhook_url,
+          event_types: input.webhook_events
+        }
+      });
     }
 
-    // 6. Upload Leads (optional)
+    // 8. Upload Leads (optional)
     if (input.leads && input.leads.length > 0) {
+      console.log(`📤 Uploading ${input.leads.length} leads...`);
       const CHUNK_SIZE = 100;
       for (let i = 0; i < input.leads.length; i += CHUNK_SIZE) {
         const chunk = input.leads.slice(i, i + CHUNK_SIZE);
-        const leadRes = await fetchTool({
+        await fetchTool({
           url: `${baseUrl}/campaigns/${campaignId}/leads?api_key=${apiKey}`,
           method: "POST",
           body: {
-            lead_list: chunk
+            lead_list: chunk,
+            settings: { ignore_global_block_list: false, ignore_unsubscribe_list: false }
           }
         });
-        if (leadRes.status !== 200 && leadRes.status !== 201) {
-          console.error(`Failed to upload lead chunk starting at index ${i}:`, leadRes.data);
-        }
       }
     }
 
@@ -128,7 +167,7 @@ export async function handler(
       success: true,
       data: {
         campaign_id: campaignId,
-        message: `Campaign '${input.name}' created and configured successfully. Sequences: ${input.sequences.length}, Senders: ${input.email_account_ids.length}, Leads: ${input.leads?.length || 0}.`
+        message: `Campaign '${input.name}' launched successfully! AI Sequences: ${input.generateAiSequences}.`
       },
       durationMs: Date.now() - ctx.startTime,
     };

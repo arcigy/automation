@@ -5,16 +5,75 @@ import type { AutomationContext, AutomationResult } from '../../core/types';
 import { geminiCallTool } from '../../tools/ai/gemini-call.tool';
 import { fetchTool } from '../../tools/http/fetch.tool';
 import { env } from '../../core/env';
-import { sql } from '../../core/db';
+import { sql, isSystemActive } from '../../core/db';
+import { fetchGmailHistory } from '../../tools/google/gmail-history.tool';
 
 export async function handler(rawInput: unknown): Promise<AutomationResult<SmartleadOutput>> {
   const input = inputSchema.parse(rawInput);
+
+  // KROK -2: Ignoruj eventy, ktoré nie sú odpoveďou (napr. OPEN, CLICK, SENT)
+  // Reagujeme iba na EMAIL_REPLY alebo LEAD_CATEGORY_UPDATED, ktoré majú v tele text
+  const allowedTypes = ['EMAIL_REPLY', 'LEAD_CATEGORY_UPDATED'];
+  const eventType = input.type?.toUpperCase() || '';
+  const hasBody = input.email_body && input.email_body.trim().length > 0;
+
+  if (eventType && !allowedTypes.includes(eventType)) {
+    console.log(`ℹ️ Ignorujem event typu ${eventType}. Reagujeme len na odpovede.`);
+    return {
+      success: true,
+      data: {
+        leadEmail: input.to_email,
+        replySent: false,
+        aiReply: `Skipped: Event type ${eventType} ignored.`,
+        smartleadResponseStatus: 0,
+        usedEmailStatsId: "N/A",
+        dry_run: input.dry_run ?? false,
+      },
+      durationMs: 0,
+    };
+  }
+
+  if (!hasBody) {
+    console.log(`ℹ️ Ignorujem event bez obsahu správy (email_body).`);
+    return {
+      success: true,
+      data: {
+        leadEmail: input.to_email,
+        replySent: false,
+        aiReply: "Skipped: Empty email body.",
+        smartleadResponseStatus: 0,
+        usedEmailStatsId: "N/A",
+        dry_run: input.dry_run ?? false,
+      },
+      durationMs: 0,
+    };
+  }
 
   const ctx: AutomationContext = {
     automationName: input.dry_run ? 'smartlead-ai-reply:dry-run' : 'smartlead-ai-reply',
     runId: randomUUID(),
     startTime: Date.now(),
   };
+
+  // KROK -1: Kontrola stavu systému (iba ak nejde o dry-run)
+  if (!input.dry_run) {
+    const active = await isSystemActive('ai_replies_active');
+    if (!active) {
+      console.log(`⏸️ AI Replies sú v systéme POZASTAVENÉ. Preskakujem odpoveď.`);
+      return {
+        success: true,
+        data: {
+          leadEmail: input.to_email,
+          replySent: false,
+          aiReply: "Skipped: AI Replies are currently PAUSED in system settings.",
+          smartleadResponseStatus: 0,
+          usedEmailStatsId: "N/A",
+          dry_run: false,
+        },
+        durationMs: 0,
+      };
+    }
+  }
 
   // KROK 0: Kontrola duplicity (iba ak nejde o dry-run)
   if (!input.dry_run) {
@@ -49,11 +108,44 @@ export async function handler(rawInput: unknown): Promise<AutomationResult<Smart
     let classification;
 
     try {
-      const results = await Promise.all([
-        fetchMessageHistory(input.campaign_id, input.to_email),
-      ]);
-      messageData = results[0];
-      classification = await classifyReply(input.email_body ?? '', messageData?.history || [], messageData?.sender_name);
+      messageData = await fetchMessageHistory(input.campaign_id, input.to_email, input.from_email);
+      
+      // KROK 1.5: Kontrola "Human-in-the-loop"
+      // Ak sme už manuálne odpovedali na predchádzajúcu správu leada, AI by nemalo zasahovať.
+      const history = messageData?.history || [];
+      
+      // Nájdeme index poslednej odpovede od leada v histórii
+      const leadMessages = history.filter(m => m.type === 'EMAIL_REPLY' || m.type === 'REPLY' || (!m.isMe && m.from_email !== input.from_email));
+      
+      if (leadMessages.length > 0) {
+        const lastLeadMessage = leadMessages[leadMessages.length - 1];
+        const lastLeadMessageIndex = history.indexOf(lastLeadMessage);
+        
+        // Zistíme, či po tejto poslednej správe od leada existuje v histórii nejaká naša správa
+        // (to by znamenalo, že konverzáciu už prevzal človek)
+        const messagesAfterLead = history.slice(lastLeadMessageIndex + 1);
+        const hasOurReplyAfterLead = messagesAfterLead.some(m => m.type === 'EMAIL_SENT' || m.type === 'SENT' || m.isMe);
+
+        if (hasOurReplyAfterLead) {
+          console.log(`ℹ️ Preskakujem: Detegovaná manuálna odpoveď po poslednej správe leada.`);
+          const result: AutomationResult<SmartleadOutput> = {
+            success: true,
+            data: {
+              leadEmail: input.to_email,
+              replySent: false,
+              aiReply: "Skipped: Human-in-the-loop detected (we already replied to a previous message from this lead).",
+              smartleadResponseStatus: 0,
+              usedEmailStatsId: messageData?.email_stats_id || "N/A",
+              dry_run: input.dry_run ?? false,
+            },
+            durationMs: Date.now() - ctx.startTime,
+          };
+          await logRun(ctx, result, input);
+          return result;
+        }
+      }
+
+      classification = await classifyReply(input.email_body ?? '', history, messageData?.sender_name);
     } catch (e: any) {
       if (input.dry_run) {
         console.log(`[DRY-RUN] API error: ${e.message}. Using mock data.`);
@@ -192,7 +284,7 @@ interface MessageData {
   sender_name?: string;
 }
 
-async function fetchMessageHistory(campaignId: string, leadEmail: string): Promise<MessageData | null> {
+async function fetchMessageHistory(campaignId: string, leadEmail: string, preferredSenderEmail?: string): Promise<MessageData | null> {
   const baseUrl = 'https://server.smartlead.ai/api/v1';
 
   // 1. Získať lead_id vyhľadaním leada podľa emailu
@@ -202,41 +294,59 @@ async function fetchMessageHistory(campaignId: string, leadEmail: string): Promi
   });
 
   if (leadLookupRes.status !== 200) {
-    throw new Error(`Smartlead lead lookup API returned ${leadLookupRes.status}`);
+    console.error(`Smartlead lead lookup API returned ${leadLookupRes.status}`);
   }
 
-  const data = leadLookupRes.data as any;
+  const data = leadLookupRes.status === 200 ? leadLookupRes.data as any : { data: [] };
   const leads = Array.isArray(data) ? data : (data.id ? [data] : (data.data || []));
 
-  if (!leads || leads.length === 0) {
-    throw new Error(`Lead with email ${leadEmail} not found in Smartlead`);
+  let smartleadMessages: any[] = [];
+  let leadMapId: string | undefined;
+
+  if (leads.length > 0) {
+      // Nájdeme leada patriaceho pod správnu kampaň, alebo použijeme aspoň prvého
+      const targetLead = leads.find((l: any) => l.campaign_id == campaignId) || leads[0];
+      leadMapId = targetLead.id || targetLead.campaign_lead_map_id;
+
+      if (leadMapId) {
+          const historyUrl = `${baseUrl}/campaigns/${campaignId}/leads/${leadMapId}/message-history`;
+          const result = await fetchTool({
+              url: `${historyUrl}?api_key=${env.SMARTLEAD_API_KEY}`,
+              method: 'GET',
+          });
+          if (result.status === 200) {
+              const resData = result.data as any;
+              smartleadMessages = Array.isArray(resData) ? resData : (resData.data || resData.history || resData.messages || []);
+          }
+      }
   }
 
-  // Nájdeme leada patriaceho pod správnu kampaň, alebo použijeme aspoň prvého (kvôli lead_id mapovaniu)
-  const targetLead = leads.find((l: any) => l.campaign_id == campaignId) || leads[0];
-  const leadMapId = targetLead.id || targetLead.campaign_lead_map_id;
+  // 2. Skúsiť Gmail históriu
+  const senderEmailForGmail = preferredSenderEmail || 
+    smartleadMessages.find((m: any) => m.from_email || m.from)?.from_email || 
+    smartleadMessages.find((m: any) => m.from_email || m.from)?.from;
 
-  if (!leadMapId) {
-    throw new Error(`Could not determine lead map ID for email ${leadEmail}`);
+  let gmailMessages: any[] = [];
+  if (senderEmailForGmail) {
+      console.log(`📡 Fetching Gmail history for ${leadEmail} from ${senderEmailForGmail}...`);
+      const gmailHistory = await fetchGmailHistory(leadEmail, senderEmailForGmail);
+      gmailMessages = gmailHistory.map((m: any) => ({
+          email_body: m.body,
+          subject: m.subject,
+          from_email: m.from,
+          type: m.isMe ? 'EMAIL_SENT' : 'EMAIL_REPLY',
+          send_time: m.date,
+          isGmail: true
+      }));
   }
 
-  // 2. Fetchovať message history pomocou správneho lead mapping ID
-  const url = `${baseUrl}/campaigns/${campaignId}/leads/${leadMapId}/message-history`;
+  // 3. Spojiť histórie a zmazať duplicity (podľa času a textu - približne)
+  const combinedHistory = [...smartleadMessages, ...gmailMessages].sort((a, b) => 
+    new Date(a.send_time || a.created_at).getTime() - new Date(b.send_time || b.created_at).getTime()
+  );
 
-  const result = await fetchTool({
-    url: `${url}?api_key=${env.SMARTLEAD_API_KEY}`,
-    method: 'GET',
-  });
-
-  if (result.status !== 200) {
-    throw new Error(`Smartlead message-history API returned ${result.status}`);
-  }
-
-  const resultData = result.data as any;
-  const messages = Array.isArray(resultData) ? resultData : (resultData.data || resultData.history || resultData.messages || []);
-
-  // Zoober posledný email ktorý sme MY poslali (typ EMAIL_SENT alebo from náš email)
-  const sentMessages = messages
+  // 4. Extrahovať dáta pre Smartlead reply (potrebujeme stats_id a message_id z posledného SENT v Smartleade)
+  const sentMessages = smartleadMessages
     .map((m: unknown) => {
       const parsed = messageHistoryItemSchema.safeParse(m);
       return parsed.success ? parsed.data : null;
@@ -248,17 +358,27 @@ async function fetchMessageHistory(campaignId: string, leadEmail: string): Promi
       Boolean(m.message_id)
     );
 
-  if (sentMessages.length === 0) return null;
+  if (sentMessages.length === 0) {
+      // Ak nemáme Smartlead históriu, nemôžeme odpovedať cez Smartlead API thread
+      // Ale môžeme aspoň vrátiť históriu pre AI ak existuje Gmail
+      if (combinedHistory.length > 0) {
+          return {
+              email_stats_id: '',
+              reply_message_id: '',
+              reply_email_time: '',
+              history: combinedHistory,
+              sender_email: senderEmailForGmail,
+              sender_name: senderEmailForGmail?.split('@')[0] || 'ME'
+          };
+      }
+      return null;
+  }
 
-  // Posledná odoslaná správa (najnovšia)
   const lastSent = sentMessages[sentMessages.length - 1];
-
-  // Dynamická extrakcia mena odosielateľa
   let senderName = (lastSent as any).from_name;
   const senderEmail = lastSent.from_email || (lastSent as any).from;
 
   if (!senderName && senderEmail) {
-    // Ak chýba meno, skúsime ho vytiahnuť z emailu (napr. andrej.r@arcigy.group -> Andrej)
     const prefix = senderEmail.split('@')[0].split('.')[0];
     senderName = prefix.charAt(0).toUpperCase() + prefix.slice(1);
   }
@@ -267,9 +387,9 @@ async function fetchMessageHistory(campaignId: string, leadEmail: string): Promi
     email_stats_id: lastSent.stats_id!,
     reply_message_id: lastSent.message_id!,
     reply_email_time: lastSent.send_time ?? lastSent.created_at ?? new Date().toISOString(),
-    history: messages,
+    history: combinedHistory,
     sender_email: senderEmail,
-    sender_name: senderName || 'Andrej', // Úplný fallback
+    sender_name: senderName || 'Andrej',
   };
 }
 
@@ -385,6 +505,7 @@ Rules:
 - Sound professional but warm — not robotic or overly corporate
 - Always include the link and refer to it as "ukážka" (showcase), NEVER use the word "portfólio".
 - Link: <a href='https://www.arcigy.com/showcase'>https://www.arcigy.com/showcase</a>
+- PRICING (CENA): If the lead asks about price, explain that it depends on the complexity of the automation. Mention that you can discuss pricing in detail during a call, which they can book directly on our website. Suggest they first view the promised showcase ("ukážka").
 - No subject line, no sign-off, no signature — reply body only
 - Use formal address (VYKANIE in Slovak) for the entire response
 - Format the reply as simple HTML. Use <br><br> for paragraph breaks.

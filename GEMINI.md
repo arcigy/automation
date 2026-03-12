@@ -48,3 +48,34 @@ id, run_id, automation_name, status, payload, result, error, duration_ms, create
 ## Externé API docs
 
 - docs/smartlead-api.md → Smartlead API referencia, čítaj pri každej Smartlead práci
+- docs/smartlead-working-structures.md → **Overené fungujúce JSON štruktúry** pre Smartlead. VŽDY čítaj pred tvorbou kampane.
+
+## Smartlead Sequence Generation
+
+- **Prompt súbor**: `prompts/smartlead-sequence-ai.md` — používateľom definujú inštrukcie pre AI.
+- **Tool**: `tools/smartlead/generate-sequences.tool.ts` — volá Gemini 2.5 Flash, číta prompt zo súboru, vracia pole `Sequence[]` v správnom Smartlead formáte.
+- **Integrácia v `smartlead-create-campaign`**: Keď `generateAiSequences: true`, handler automaticky zavolá tento tool pred tvorbou kampane.
+
+### Sequence JSON formát (vždy používaj tento):
+```json
+{
+  "sequences": [
+    {
+      "seq_number": 1,
+      "seq_delay_details": { "delay_in_days": 0 },
+      "seq_variants": [
+        { "variant_label": "A", "subject": "...", "email_body": "<p>HTML...</p>" }
+      ]
+    }
+  ]
+}
+```
+
+## Smartlead Email Účty (ID pre Slovakia kampane)
+
+- `14382544` → branislav.l@arcigy.group
+- `14382530` → branislav@arcigy.group
+- `14382508` → andrej.r@arcigy.group
+- `14382300` → andrej@arcigy.group
+
+Tieto ID hardcoded **NIE SÚ** — vždy sa dajú získať z `/email-accounts` endpointu.

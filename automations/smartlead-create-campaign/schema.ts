@@ -4,12 +4,16 @@ export const inputSchema = z.object({
   name: z.string().min(1, "Campaign name is required"),
   client_id: z.number().optional(),
   
-  // Sequences
+  // Sequences (Optional if generateAiSequences is true)
   sequences: z.array(z.object({
-    subject: z.string().min(1),
+    subject: z.string().min(1).optional(), // Some can be empty for threads
     body: z.string().min(1),
     delay_in_days: z.number().default(0)
-  })).min(1),
+  })).optional(),
+
+  generateAiSequences: z.boolean().default(false),
+  nicheDescription: z.string().optional(),
+  customAiInstructions: z.string().optional(),
 
   // Leads (Optional)
   leads: z.array(z.object({
