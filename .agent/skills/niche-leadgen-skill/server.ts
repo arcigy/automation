@@ -10,10 +10,10 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 const port = parseInt(process.env.PORT || "3000");
-const apiKey = process.env.GEMINI_API_KEY;
+const apiKey = process.env.RAILWAY_AUTH_KEY;
 
 if (!apiKey) {
-  console.error("❌ GEMINI_API_KEY environment variable not set");
+  console.error("❌ RAILWAY_AUTH_KEY environment variable not set");
   process.exit(1);
 }
 

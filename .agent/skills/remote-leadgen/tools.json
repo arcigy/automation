@@ -1,0 +1,248 @@
+{
+  "base_url": "https://automation-arcigy.up.railway.app",
+  "auth_header": "x-api-key",
+  "auth_value": "wvbwvnpiwemwkmgpomnoprtmnpotn51984er",
+  "tools": [
+    {
+      "name": "health_check",
+      "description": "Skontroluj či Railway server beží",
+      "method": "GET",
+      "endpoint": "/health",
+      "auth_required": false,
+      "parameters": {}
+    },
+    {
+      "name": "get_status",
+      "description": "Zobraz štatistiky leadov v databáze. Voliteľne filtruj podľa niche.",
+      "method": "GET",
+      "endpoint": "/status",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "niche": {
+            "type": "string",
+            "description": "Filtruj podľa niche (napr. plumber, accountant). Ak nie je zadané, vráti všetky.",
+            "required": false
+          }
+        }
+      },
+      "query_params": ["niche"]
+    },
+    {
+      "name": "run_discovery",
+      "description": "Scrapni nové leady z Google Maps alebo Serperu pre danú niche a región.",
+      "method": "POST",
+      "endpoint": "/discovery",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "niche": {
+            "type": "string",
+            "description": "Typ biznisu (napr. plumber, accountant, dentist)",
+            "required": true
+          },
+          "region": {
+            "type": "string",
+            "description": "Mesto alebo región (napr. bratislava, kosice, all-slovakia)",
+            "required": true
+          },
+          "source": {
+            "type": "string",
+            "enum": ["maps", "serper"],
+            "description": "Zdroj scrapingu. Ak nie je zadané, použijú sa oba.",
+            "required": false
+          },
+          "target": {
+            "type": "number",
+            "description": "Cieľový počet leadov",
+            "required": false
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Ak true, len náhľad bez ukladania do DB",
+            "required": false,
+            "default": false
+          }
+        },
+        "required": ["niche", "region"]
+      }
+    },
+    {
+      "name": "run_enrich",
+      "description": "AI enrichment leadov — doplní informácie, skóre a icebreakery pomocou Gemini.",
+      "method": "POST",
+      "endpoint": "/enrich",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "niche": {
+            "type": "string",
+            "description": "Enrichni leady len z tejto niche. Ak nie je zadané, enrichni všetky pending.",
+            "required": false
+          },
+          "limit": {
+            "type": "number",
+            "description": "Max počet leadov na enrichment",
+            "required": false
+          },
+          "allPending": {
+            "type": "boolean",
+            "description": "Ak true, enrichni všetky pending leady bez limitu",
+            "required": false,
+            "default": false
+          }
+        }
+      }
+    },
+    {
+      "name": "run_validate",
+      "description": "Validuj kvalitu leadov — email formáty, duplicity, blacklist check, skóre.",
+      "method": "POST",
+      "endpoint": "/validate",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "niche": {
+            "type": "string",
+            "description": "Niche na validáciu",
+            "required": true
+          }
+        },
+        "required": ["niche"]
+      }
+    },
+    {
+      "name": "run_inject",
+      "description": "Nahraj leady do Smartlead kampane. Voliteľne vytvor novú kampaň.",
+      "method": "POST",
+      "endpoint": "/inject",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "niche": {
+            "type": "string",
+            "description": "Niche na inject",
+            "required": true
+          },
+          "minScore": {
+            "type": "number",
+            "description": "Minimálne skóre leadu (0-100). Default: 0",
+            "required": false,
+            "default": 0
+          },
+          "createCampaign": {
+            "type": "boolean",
+            "description": "Ak true, vytvor novú Smartlead kampaň",
+            "required": false,
+            "default": false
+          },
+          "dryRun": {
+            "type": "boolean",
+            "description": "Ak true, len náhľad bez uploadu",
+            "required": false,
+            "default": false
+          }
+        },
+        "required": ["niche"]
+      }
+    },
+    {
+      "name": "prep_for_ai",
+      "description": "Exportuj leady v markdown formáte pre ďalšie AI spracovanie.",
+      "method": "POST",
+      "endpoint": "/prep-for-ai",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "niche": {
+            "type": "string",
+            "description": "Niche na export",
+            "required": true
+          }
+        },
+        "required": ["niche"]
+      }
+    },
+    {
+      "name": "write_icebreakers",
+      "description": "Ulož emailové icebreakery pre konkrétnych leadov do databázy.",
+      "method": "POST",
+      "endpoint": "/write-icebreakers",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "icebreakers": {
+            "type": "array",
+            "description": "Pole objektov s id a icebreaker textom",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "ID leadu v databáze"
+                },
+                "icebreaker": {
+                  "type": "string",
+                  "description": "Text icebreakera pre daného leadu"
+                }
+              },
+              "required": ["id", "icebreaker"]
+            },
+            "required": true
+          }
+        },
+        "required": ["icebreakers"]
+      }
+    },
+    {
+      "name": "export_leads",
+      "description": "Exportuj leady vo formáte CSV alebo JSON.",
+      "method": "GET",
+      "endpoint": "/export",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "niche": {
+            "type": "string",
+            "description": "Niche na export",
+            "required": true
+          }
+        },
+        "required": ["niche"]
+      },
+      "query_params": ["niche"]
+    },
+    {
+      "name": "manage_blacklist",
+      "description": "Spravuj blacklist domén — pridaj, odober alebo vypíš blacklistované domény.",
+      "method": "POST",
+      "endpoint": "/blacklist",
+      "auth_required": true,
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": ["add", "remove", "list"],
+            "description": "Akcia: add = pridaj doménu, remove = odober doménu, list = zobraz všetky",
+            "required": true
+          },
+          "domain": {
+            "type": "string",
+            "description": "Doména na pridanie/odobratie (napr. amazon.sk). Nie je potrebná pre action=list.",
+            "required": false
+          }
+        },
+        "required": ["action"]
+      }
+    }
+  ]
+}
