@@ -1,0 +1,9 @@
+{
+  "build": {
+    "builder": "nixpacks"
+  },
+  "deploy": {
+    "startCommand": "bun server.ts",
+    "restartPolicyType": "on_failure"
+  }
+}
