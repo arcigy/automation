@@ -79,3 +79,24 @@ id, run_id, automation_name, status, payload, result, error, duration_ms, create
 - `14382300` → andrej@arcigy.group
 
 Tieto ID hardcoded **NIE SÚ** — vždy sa dajú získať z `/email-accounts` endpointu.
+
+---
+
+## 💎 Pricing Engine MCP Server
+
+### 🧠 Kedy používať:
+Keď používateľ žiada o **cenitvorbu, zľavy, skladové zásoby alebo marže**.
+
+### 📖 Directives (MCP Tools Detailed Instructions):
+Pred každým použitím toolov si **VŽDY** prečítaj príslušný directive file:
+
+- **💎 Pricing Engine:** `pricing-mcp-server/docs/directives/pricing-engine.md` (Cenotvorba, marže, zásoby)
+- **🕸️ Web Scraper:** `docs/directives/web-scraper.md` (Aggresívny scraping webov a kontaktov)
+
+### 🛠️ Dostupné Tools:
+- `generate_pricing_proposal`: Cenový návrh.
+- `validate_pricing`: Kontrola marže (min 15%) a politiky.
+- `get_product_inventory`: Skladové zásoby.
+- `apply_bulk_discount`: VIP a množstevné zľavy.
+- `calculate_margin`: Analýza ziskovosti.
+- `web_scraper`: Agresívny scraper webov pre emaily a texty.
