@@ -11,19 +11,17 @@ const REQUIRED_VARS = {
   SERPER_API_KEY: process.env.SERPER_API_KEY,
 } as const;
 
-// AI obsah (icebreakers, sekvencie) generuje priamo Claude Code — žiadny API kľúč nie je potrebný.
+// AI obsah (icebreakers, sekvencie) generuje Gemini Flash 2.5 — GEMINI_API_KEY je voliteľný.
 
 // Optional vars (nenastavia chybu, len warning)
 const OPTIONAL_VARS = {
   SLACK_WEBHOOK_URL: process.env.SLACK_WEBHOOK_URL,
-  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
-  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, // voliteľné — Claude Code generuje AI obsah sám
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY, // Gemini Flash 2.5 for AI generation
 };
 
 export type Config = Record<keyof typeof REQUIRED_VARS, string> & {
   SLACK_WEBHOOK_URL?: string;
   GEMINI_API_KEY?: string;
-  ANTHROPIC_API_KEY?: string;
 };
 
 export function loadConfig(): Config {

@@ -11,7 +11,7 @@ Pred prvým použitím nastav:
 
 ```bash
 LEADGEN_API_URL=https://automation-arcigy.up.railway.app
-LEADGEN_API_KEY=<tvoj-uuid-api-key-z-railway>
+LEADGEN_API_KEY=<tvoj-GEMINI_API_KEY-z-railway>
 ```
 
 > ⚡ Vše ostatné (databáza, API klíče) sú na Railway — ty tu nie!

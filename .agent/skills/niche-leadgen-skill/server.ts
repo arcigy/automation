@@ -1,6 +1,6 @@
 /**
  * server.ts — HTTP API wrapper for niche-leadgen-skill
- * Wraps all leadgen scripts as REST endpoints for remote Claude control via Railway
+ * Wraps all leadgen scripts as REST endpoints for remote Gemini control via Railway
  * All requests authenticated via x-api-key header
  */
 
@@ -10,10 +10,10 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 const port = parseInt(process.env.PORT || "3000");
-const apiKey = process.env.CLAUDE_API_KEY;
+const apiKey = process.env.GEMINI_API_KEY;
 
 if (!apiKey) {
-  console.error("❌ CLAUDE_API_KEY environment variable not set");
+  console.error("❌ GEMINI_API_KEY environment variable not set");
   process.exit(1);
 }
 

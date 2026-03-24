@@ -11,7 +11,7 @@ Nastav environment premenné v Claude Code settings alebo v `.env.local`:
 
 ```bash
 LEADGEN_API_URL=https://automation-arcigy.up.railway.app
-LEADGEN_API_KEY=<tvoj-uuid-kľúč>
+LEADGEN_API_KEY=<tvoj-GEMINI_API_KEY>
 ```
 
 ## 3️⃣ Verifikácia
@@ -41,7 +41,7 @@ x-api-key: <LEADGEN_API_KEY>
 
 Príklad:
 ```bash
-curl -H "x-api-key: 550e8400-e29b-41d4-a716-446655440000" \
+curl -H "x-api-key: <tvoj-GEMINI_API_KEY>" \
   https://automation-arcigy.up.railway.app/status
 ```
 

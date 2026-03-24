@@ -220,7 +220,7 @@ Store these in Railway secrets or `.env.local`:
 
 ```
 LEADGEN_API_URL=https://automation-arcigy.up.railway.app
-LEADGEN_API_KEY=550e8400-e29b-41d4-a716-446655440000
+LEADGEN_API_KEY=<tvoj-GEMINI_API_KEY>
 ```
 
 ---

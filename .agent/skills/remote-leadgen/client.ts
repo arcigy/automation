@@ -1,6 +1,7 @@
 /**
  * remote-leadgen/client.ts — HTTP API client for Railway-hosted leadgen
  * Provides TypeScript interface to all leadgen endpoints
+ * Uses GEMINI_API_KEY for authentication
  */
 
 interface ClientConfig {
