@@ -11,8 +11,16 @@ import { requestLogger } from "./middleware/logger";
 import { runMigrations } from "../core/db";
 import { initCrons } from "./crons";
 import { setupMcpServer } from "./mcp-server";
+import { cors } from "hono/cors";
 
 const app = new Hono();
+
+// Povoliť CORS pre všetky MCP Connectory (ako cloud claude)
+app.use("/mcp/*", cors({
+  origin: '*',
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+}));
 
 // Inicializovať MCP server
 setupMcpServer(app);
