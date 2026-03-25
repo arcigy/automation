@@ -20,7 +20,7 @@ import { parseArgs } from "util";
 import { writeFileSync } from "fs";
 
 const { values: args } = parseArgs({
-  args: Bun.argv.slice(2),
+  args: (typeof Bun !== "undefined" ? Bun.argv : process.argv).slice(2),
   options: {
     niche:   { type: "string" },
     limit:   { type: "string", default: "50" },

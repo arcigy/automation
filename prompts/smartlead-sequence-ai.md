@@ -36,7 +36,7 @@ Toto sú **reálne premenné** zo Smartlead systému. Použi ich doslova, s dvoj
 **Telo (Variant A aj B majú rovnaké telo, líšia sa IBA predmetom):**
 
 ```
-Dobrý deň {{last_name_with_salutation}},
+Dobrý deň{{last_name_with_salutation}},
 
 {{personalized_intro}}
 
@@ -64,7 +64,7 @@ _Zmeň IBA: [NICHE], [NICHE-SPECIFICKÝ PROBLÉM]. Nič iné._
 **Telo — NEMEŇ VÔBEC. Len uprav [inzeráty/obhliadky] ak pre danú niche nedávajú zmysel:**
 
 ```
-Dobrý deň {{last_name_with_salutation}},
+Dobrý deň{{last_name_with_salutation}},
 
 len som sa chcel uistiť, či vám ten môj mail nespadol do spamu medzi inzeráty.
 
@@ -89,12 +89,12 @@ Stačí mi len stručné 'áno/nie', či vás tá téma automatizácie dopytov z
         {
           "variant_label": "A",
           "subject": "Len taká úvaha nad {{company_name}}",
-          "email_body": "<p>Dobrý deň {{last_name_with_salutation}},</p><p>{{personalized_intro}}</p><p>Úprimne – kedy ste mali naposledy víkend bez toho, aby ste riešili 50 telefonátov od ľudí, čo sa chcú len prísť pozrieť?</p><p>Viem, ako to v [NICHE] chodí. Polovicu dňa zabije naháňaním ľudí, čo [NICHE-SPECIFICKÝ PROBLÉM], a tú druhú manuálne odpisovanie na tie isté otázky. Je to šialený žrút energie.</p><p>Ja pomáham [NICHE] cez taký AI audit nastaviť veci tak, aby sa záujemcovia filtrovali sami a do kalendára vám padali už len vážni záujemcovia. Vy zatiaľ môžete riešiť reálne obchody (alebo byť s rodinou).</p><p>Môžem vám hodiť do mailu ukážku, ako by to mohlo vyzerať u vás?</p><p>Majte sa fajn,</p><p>%signature%</p>"
+          "email_body": "<p>Dobrý deň{{last_name_with_salutation}},</p><p>{{personalized_intro}}</p><p>Úprimne – kedy ste mali naposledy víkend bez toho, aby ste riešili 50 telefonátov od ľudí, čo sa chcú len prísť pozrieť?</p><p>Viem, ako to v [NICHE] chodí. Polovicu dňa zabije naháňaním ľudí, čo [NICHE-SPECIFICKÝ PROBLÉM], a tú druhú manuálne odpisovanie na tie isté otázky. Je to šialený žrút energie.</p><p>Ja pomáham [NICHE] cez taký AI audit nastaviť veci tak, aby sa záujemcovia filtrovali sami a do kalendára vám padali už len vážni záujemcovia. Vy zatiaľ môžete riešiť reálne obchody (alebo byť s rodinou).</p><p>Môžem vám hodiť do mailu ukážku, ako by to mohlo vyzerať u vás?</p><p>Majte sa fajn,</p><p>%signature%</p>"
         },
         {
           "variant_label": "B",
           "subject": "Otázka k {{company_name}}",
-          "email_body": "<p>Dobrý deň {{last_name_with_salutation}},</p><p>{{personalized_intro}}</p><p>Úprimne – kedy ste mali naposledy víkend bez toho, aby ste riešili 50 telefonátov od ľudí, čo sa chcú len prísť pozrieť?</p><p>Viem, ako to v [NICHE] chodí. Polovicu dňa zabije naháňaním ľudí, čo [NICHE-SPECIFICKÝ PROBLÉM], a tú druhú manuálne odpisovanie na tie isté otázky. Je to šialený žrút energie.</p><p>Ja pomáham [NICHE] cez taký AI audit nastaviť veci tak, aby sa záujemcovia filtrovali sami a do kalendára vám padali už len vážni záujemcovia. Vy zatiaľ môžete riešiť reálne obchody (alebo byť s rodinou).</p><p>Môžem vám hodiť do mailu ukážku, ako by to mohlo vyzerať u vás?</p><p>Majte sa fajn,</p><p>%signature%</p>"
+          "email_body": "<p>Dobrý deň{{last_name_with_salutation}},</p><p>{{personalized_intro}}</p><p>Úprimne – kedy ste mali naposledy víkend bez toho, aby ste riešili 50 telefonátov od ľudí, čo sa chcú len prísť pozrieť?</p><p>Viem, ako to v [NICHE] chodí. Polovicu dňa zabije naháňaním ľudí, čo [NICHE-SPECIFICKÝ PROBLÉM], a tú druhú manuálne odpisovanie na tie isté otázky. Je to šialený žrút energie.</p><p>Ja pomáham [NICHE] cez taký AI audit nastaviť veci tak, aby sa záujemcovia filtrovali sami a do kalendára vám padali už len vážni záujemcovia. Vy zatiaľ môžete riešiť reálne obchody (alebo byť s rodinou).</p><p>Môžem vám hodiť do mailu ukážku, ako by to mohlo vyzerať u vás?</p><p>Majte sa fajn,</p><p>%signature%</p>"
         }
       ]
     },
@@ -105,7 +105,7 @@ Stačí mi len stručné 'áno/nie', či vás tá téma automatizácie dopytov z
         {
           "variant_label": "A",
           "subject": "",
-          "email_body": "<p>Dobrý deň {{last_name_with_salutation}},</p><p>len som sa chcel uistiť, či vám ten môj mail nespadol do spamu medzi inzeráty.</p><p>Ak práve teraz nestíhate a riešite kopy obhliadok, úplne chápem – to je presne ten dôvod, prečo som vám písal.</p><p>Stačí mi len stručné 'áno/nie', či vás tá téma automatizácie dopytov zaujíma, nech vás zbytočne nespamujem.</p><p>%sender-firstname%</p>"
+          "email_body": "<p>Dobrý deň{{last_name_with_salutation}},</p><p>len som sa chcel uistiť, či vám ten môj mail nespadol do spamu medzi inzeráty.</p><p>Ak práve teraz nestíhate a riešite kopy obhliadok, úplne chápem – to je presne ten dôvod, prečo som vám písal.</p><p>Stačí mi len stručné 'áno/nie', či vás tá téma automatizácie dopytov zaujíma, nech vás zbytočne nespamujem.</p><p>%sender-firstname%</p>"
         }
       ]
     }

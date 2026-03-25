@@ -55,6 +55,51 @@ function cleanAndValidateIco(raw: string | null | undefined): string | null {
   return null;
 }
 
+/** Extracts Full Name from email (e.g. jan.novak@domain.com -> Jan Novak) */
+function extractNameFromEmail(email: string, companyNameShort?: string): string | null {
+  if (!email) return null;
+  const lower = email.toLowerCase();
+  
+  // 1. Generic/Functional word check
+  const genericWords = new Set(["info", "kontakt", "contact", "mail", "hello", "office", "admin", "webmaster", "support", "sales", "dopyt", "objednavky", "predajna", "prijem", "servis", "marketing", "obchod", "technik", "administrativa", "ucl", "bratislava", "nitra", "zilina", "trnava", "kosice", "trencin", "poprad", "martin", "presov", "zvolen", "statny", "dozor", "www", "request", "valid", "test", "email", "priklad", "priklady", "example", "jan", "jana", "stavebnik", "katalog", "firmy", "zivefirmy", "hotline", "helpdesk", "postmaster", "hostmaster", "billing", "invoice", "faktury", "sklad", "vyroba", "dispecing"]);
+  
+  const localPart = lower.split("@")[0].replace(/[0-9]/g, ""); 
+  const parts = localPart.split(/[._-]/).filter(p => p.length > 0);
+  
+  if (parts.some(p => genericWords.has(p))) return null;
+
+  // 2. Discard known fake/example/functional emails
+  if (lower.includes("jan@novak.sk") || lower.includes("email@email.sk") || lower.includes("priklad@email.sk") || lower.includes("example@")) return null;
+
+  if (localPart.length < 3) return null;
+
+  // 3. Skip if matches company name (e.g. radiant@radiant.sk)
+  if (companyNameShort) {
+    const cleanCompany = companyNameShort.toLowerCase().replace(/\s/g, "");
+    if (cleanCompany.length > 4 && (localPart.includes(cleanCompany) || cleanCompany.includes(localPart))) return null;
+  }
+
+  // 4. Multi-part names (high confidence)
+  // Catch patterns like j.novak, i.ryban, laubert.bb
+  if (parts.length >= 2 && parts.some(p => p.length >= 3)) {
+    return parts
+      .map(p => p.charAt(0).toUpperCase() + p.slice(1).toLowerCase())
+      .join(" ");
+  }
+  
+  // 5. Single names (like peter@...) - only if they are EXPLICITLY Slovak human names
+  const commonSlovakNames = new Set([
+      "jan", "peter", "jozef", "michal", "marek", "martin", "milan", "pavol", "ivan", "tomas", "stanislav", "vladimir", "igor", "dusan", "radoslav", "richard", "maros", "juraj", "andrej", "lukas", "matej", "filip", "robert", "matus", "jakub", "samuel", "roman", "adrian", "lubomir", "branislav",
+      "maria", "jana", "zuzana", "katarina", "eva", "anna", "monika", "lenka", "lucia", "martina", "andrea", "helena", "viera", "vlasta", "daniela", "dagmar", "renata", "adriana", "ivana", "barbora"
+  ]);
+  
+  if (commonSlovakNames.has(localPart)) {
+      return localPart.charAt(0).toUpperCase() + localPart.slice(1).toLowerCase();
+  }
+
+  return null;
+}
+
 // ─── Main Handler ─────────────────────────────────────────────────────────────
 
 export async function handler(
@@ -98,6 +143,18 @@ export async function handler(
         // ══════════════════════════════════════════════════════
         console.log(`\n[Loop 1] Scraping webu...`);
         const scrapeResults = await webScraperTool({ url: lead.website, depth: 1 });
+
+        if (!scrapeResults || scrapeResults.length === 0) {
+           console.log(`⏭️  Scraping zlyhal alebo doména je na blackliste. Preskakujem.`);
+           await sql`
+             UPDATE leads 
+             SET verification_status = 'failed', 
+                 verification_notes = 'Blacklisted or scrape failed',
+                 updated_at = now() 
+             WHERE website = ${lead.website}
+           `;
+           continue;
+        }
         const combinedText = scrapeResults
           .map(r => `--- PAGE: ${r.url} ---\n${r.text}`)
           .join("\n\n");
@@ -115,14 +172,15 @@ export async function handler(
 
 RULES:
 1. Find the Decision Maker (Owner, CEO, Doctor, Founder) - the most senior person.
-2. Identify Last Name and Gender (for Slovak salutation: "pán" / "pani").
-3. Extract IČO (Company Registration Number) - exactly 8 digits, found in footer, contact page, or legal info.
-4. Extract official_company_name - the full legal name (e.g., "Novák & Partner s.r.o.").
-5. Extract business_facts - 2-3 specific, interesting facts about the business for a personalized opener.
-6. Create company_name_short - conversational, first-impression name (e.g., "Novák", "S-Autoservis").
-7. Write icebreaker_sentence in Slovak: "Naozaj ma zaujalo, že [specific fact] – [why it matters today]."
-8. If unsure about the decision maker, set verification_status to "flagged".
-9. IČO MUST be exactly 8 digits. If you find 7, add leading zero. If not found, return null.
+2. Analyze Emails: If an email local part clearly represents a human name (e.g. jozef.mrkvicka@...), and that person seems associated with the firm, consider them as the Decision Maker if no other name is verified.
+3. Identify Last Name and Gender (for Slovak salutation: "pán" / "pani").
+4. Extract IČO (Company Registration Number) - exactly 8 digits, found in footer, contact page, or legal info.
+5. Extract official_company_name - the full legal name (e.g., "Novák & Partner s.r.o.").
+6. Extract business_facts - 2-3 specific, interesting facts about the business for a personalized opener.
+7. Create company_name_short - conversational, first-impression name (e.g., "Novák", "S-Autoservis").
+8. Write icebreaker_sentence in Slovak: "Naozaj ma zaujalo, že [specific fact] – [why it matters today]."
+9. If unsure about the decision maker, set verification_status to "flagged".
+10. IČO MUST be exactly 8 digits. If you find 7, add leading zero. If not found, return null.
 
 RETURN ONLY VALID JSON, NO MARKDOWN WRAPPER:
 {
@@ -142,6 +200,11 @@ RETURN ONLY VALID JSON, NO MARKDOWN WRAPPER:
 Company: ${lead.name}
 Website: ${lead.website}
 Phones found: ${allPhones.join(", ") || "none"}
+Emails found: ${allEmailsRaw.join(", ") || "none"}
+Potential names from emails: ${allEmailsRaw.map(e => {
+  const n = extractNameFromEmail(e, lead.name);
+  return n ? `${e} -> ${n}` : null;
+}).filter(Boolean).join(", ") || "none"}
 
 Website Content:
 ${combinedText.substring(0, 12000)}`;
@@ -257,7 +320,29 @@ ${combinedText.substring(0, 12000)}`;
         }
 
         // ══════════════════════════════════════════════════════
-        // LOOP 5: Salutation detection
+        // LOOP 5: Email & Name merging
+        // ══════════════════════════════════════════════════════
+        const sortedEmails = [...allEmailsRaw].sort((a, b) => {
+          const aIsGeneric = /^(info|kontakt|contact|mail|hello|office|admin|webmaster|support|sales|dopyt|objednavky|predajna|prijem|servis)@/.test(a);
+          const bIsGeneric = /^(info|kontakt|contact|mail|hello|office|admin|webmaster|support|sales|dopyt|objednavky|predajna|prijem|servis)@/.test(b);
+          return (aIsGeneric ? 1 : 0) - (bIsGeneric ? 1 : 0);
+        });
+        const bestEmail = sortedEmails[0];
+
+        const isGenericTitle = (n: string) => /^(konateľ|konatelia|majiteľ|majitelia|majitel|riaditeľ|riaditel|podnikateľ|podnikatel|vlastník|vlastnik|webmaster|admin|info|jan|stavebnik|statny|dozor|request|valid|www|email|i-lina|priklad)$/i.test(n.trim());
+        
+        if (bestEmail) {
+          const emailName = extractNameFromEmail(bestEmail, parsed.company_name_short);
+          const hasSeparator = bestEmail.split("@")[0].includes(".") || bestEmail.split("@")[0].includes("_");
+          
+          if (emailName && (hasSeparator || !finalDecisionMaker || isGenericTitle(finalDecisionMaker))) {
+             console.log(`📧 DM prepísaný/extrahovaný z emailu: ${finalDecisionMaker || "(null)"} -> ${emailName} (${bestEmail})`);
+             finalDecisionMaker = emailName;
+          }
+        }
+
+        // ══════════════════════════════════════════════════════
+        // LOOP 6: Salutation detection
         // ══════════════════════════════════════════════════════
         let lastNameFormatted = "";
         if (finalDecisionMaker) {
@@ -276,14 +361,6 @@ ${combinedText.substring(0, 12000)}`;
           }
           lastNameFormatted = ` ${salutation} ${lastName}`;
         }
-
-        // Best email — prefer non-info@ addresses if available
-        const sortedEmails = [...allEmailsRaw].sort((a, b) => {
-          const aIsGeneric = /^(info|kontakt|contact|mail|hello|office|admin)@/.test(a);
-          const bIsGeneric = /^(info|kontakt|contact|mail|hello|office|admin)@/.test(b);
-          return (aIsGeneric ? 1 : 0) - (bIsGeneric ? 1 : 0);
-        });
-        const bestEmail = sortedEmails[0];
 
         const enrichedObj: EnrichedLead = {
           original_name: lead.name,

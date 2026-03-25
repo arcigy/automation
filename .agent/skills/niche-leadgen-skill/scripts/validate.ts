@@ -12,9 +12,11 @@
 import { getConfig } from "../config";
 import postgres from "postgres";
 import { parseArgs } from "util";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
 const { values: args } = parseArgs({
-  args: Bun.argv.slice(2),
+  args: (typeof Bun !== "undefined" ? Bun.argv : process.argv).slice(2),
   options: {
     niche:       { type: "string" },
     "min-score": { type: "string", default: "0" },

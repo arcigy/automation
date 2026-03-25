@@ -75,6 +75,11 @@ niche: e-shopy
   maps_queries: []
   serper_queries: ["e-shop SK dodávateľ", "online obchod slovensko kontakt"]
   blacklist_keywords: ["amazon", "ebay", "alza", "nay", "mall.sk"]
+
+niche: tepelne-cerpadla
+  maps_queries: ["montáž tepelných čerpadiel", "tepelné čerpadlá", "kúrenie a chladenie", "plynoinštalácia kúrenie", "stavebná firma bazény"]
+  serper_queries: ["montáž tepelného čerpadla firma SK", "tepelné čerpadlá a solárne systémy", "predaj montáž tepelných čerpadiel", "inštalatér tepelné čerpadlo"]
+  blacklist_keywords: ["bazoš", "heureka", "alza", "mall"]
 ```
 
 ---

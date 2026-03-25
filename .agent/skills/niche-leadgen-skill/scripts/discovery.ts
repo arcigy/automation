@@ -14,13 +14,15 @@ import { getConfig } from "../config";
 import postgres from "postgres";
 import { parseArgs } from "util";
 import { readFileSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 
 // ─── Arg Parsing ─────────────────────────────────────────────────────────────
 const { values: args } = parseArgs({
-  args: Bun.argv.slice(2),
+  args: (typeof Bun !== "undefined" ? Bun.argv : process.argv).slice(2),
   options: {
     niche:    { type: "string" },
+    query:    { type: "string" },                     // Custom Serper query
     region:   { type: "string", default: "Bratislava" },
     source:   { type: "string", default: "both" },    // maps | serper | both
     target:   { type: "string", default: "100" },
@@ -38,7 +40,7 @@ if (!args.niche) {
   process.exit(1);
 }
 
-const SKILL_ROOT = join(import.meta.dir, "..");
+const SKILL_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_ROOT = join(SKILL_ROOT, "..", "..", "..");
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
@@ -64,9 +66,10 @@ function normalizeDomain(url: string): string | null {
 
 const GLOBAL_BLACKLIST = new Set([
   "zivefirmy.sk", "firmy.sk", "zlatestranky.sk", "facebook.com",
-  "instagram.com", "linkedin.com", "twitter.com", "youtube.com",
-  "google.com", "profesia.sk", "topky.sk", "sme.sk", "pravda.sk",
-  "wikipedia.org", "gov.sk", "slovensko.sk",
+  "instagram.com", "linkedin.com", "linkedin.sk", "twitter.com", "x.com", "youtube.com",
+  "google.com", "profesia.sk", "topky.sk", "sme.sk", "pravda.sk", "zoznam.sk", "azet.sk", "atlas.sk",
+  "wikipedia.org", "gov.sk", "slovensko.sk", "daibau.sk", "vsetkyfirmy.sk", "bazos.sk",
+  "tiktok.com", "pinterest.com", "mapy.cz", "mall.sk", "alza.sk", "heureka.sk"
 ]);
 
 // ─── Load niche template ──────────────────────────────────────────────────────
@@ -134,18 +137,27 @@ async function main() {
     regions = [(args.region as string)];
   }
 
-  const template = loadNicheTemplate(niche);
+  const template = loadNicheTemplate(niche as string);
   if (!template) {
     log("warn", `Šablóna pre niche "${niche}" nenájdená v niche-templates.md. Používam generické keywords.`);
   }
 
-  // Decide which maps keywords to use
+  // Decide which maps/serper keywords to use
   const mapsQueries = template?.maps_queries.length
     ? template.maps_queries.map(q => q)
     : [niche];
-  const serperQueries = template?.serper_queries.length
-    ? template.serper_queries
-    : [`"${niche}" kontakt email`];
+  
+  // SUPPORT CUSTOM QUERY
+  let serperQueries: string[] = [];
+  if (args.query) {
+    serperQueries = [args.query as string];
+    log("info", `Používam vlastnú Serper query: "${args.query}"`);
+  } else {
+    serperQueries = template?.serper_queries.length
+      ? template.serper_queries
+      : [`"${niche}" kontakt email`];
+  }
+  
   const nicheBlacklist = new Set(template?.blacklist_keywords ?? []);
 
   // Load existing domains from DB (dedup)
@@ -260,7 +272,7 @@ async function main() {
 
             seenInRun.add(domain);
             existingDomains.add(domain);
-            regionDiscovered.push({ name: place.name, website: place.website.startsWith("http") ? place.website : `https://${place.website}`, source: "google_maps", niche_slug: niche, region });
+            regionDiscovered.push({ name: place.name, website: place.website.startsWith("http") ? place.website : `https://${place.website}`, source: "google_maps", niche_slug: niche as string, region });
             newFromQuery++;
             verbose(`  ✅ ${place.name} → ${domain}`);
           }
@@ -305,7 +317,7 @@ async function main() {
 
             seenInRun.add(domain);
             existingDomains.add(domain);
-            regionDiscovered.push({ name: r.title.split("|")[0].split("–")[0].trim(), website: r.link.startsWith("http") ? r.link : `https://${r.link}`, source: "serper", niche_slug: niche, region });
+            regionDiscovered.push({ name: r.title.split("|")[0].split("–")[0].trim(), website: r.link.startsWith("http") ? r.link : `https://${r.link}`, source: "serper", niche_slug: niche as string, region });
             newFromQuery++;
             verbose(`  ✅ ${domain}`);
           }

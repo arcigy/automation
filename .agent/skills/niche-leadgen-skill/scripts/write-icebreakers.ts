@@ -17,7 +17,7 @@ import { parseArgs } from "util";
 import { readFileSync } from "fs";
 
 const { values: args } = parseArgs({
-  args: Bun.argv.slice(2),
+  args: (typeof Bun !== "undefined" ? Bun.argv : process.argv).slice(2),
   options: {
     input: { type: "string" },
   },

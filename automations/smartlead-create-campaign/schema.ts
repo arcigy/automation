@@ -6,7 +6,7 @@ export const inputSchema = z.object({
   
   // Sequences (Optional if generateAiSequences is true)
   sequences: z.array(z.object({
-    subject: z.string().min(1).optional(), // Some can be empty for threads
+    subject: z.string().optional(), // Can be empty for follow-up threads
     body: z.string().min(1),
     delay_in_days: z.number().default(0)
   })).optional(),

@@ -13,9 +13,12 @@
 import { getConfig } from "../config";
 import postgres from "postgres";
 import { parseArgs } from "util";
+import { join, dirname } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
+import { readFileSync } from "fs";
 
 const { values: args } = parseArgs({
-  args: Bun.argv.slice(2),
+  args: (typeof Bun !== "undefined" ? Bun.argv : process.argv).slice(2),
   options: {
     niche:              { type: "string" },
     "min-score":        { type: "string", default: "0" },
@@ -26,6 +29,7 @@ const { values: args } = parseArgs({
     "dry-run":          { type: "boolean", default: false },
     verbose:            { type: "boolean", default: false },
     quiet:              { type: "boolean", default: false },
+    force:              { type: "boolean", default: false },
   },
   strict: false,
 });
@@ -64,25 +68,29 @@ async function main() {
   const sql = postgres(cfg.DATABASE_URL);
   const minScore = parseInt(args["min-score"] as string, 10);
   const isDryRun = args["dry-run"] as boolean;
+  const isForce = args["force"] as boolean;
   const niche = args.niche as string;
 
-  log("info", `[INJECT] Niche: ${niche} | MinScore: ${minScore} | DryRun: ${isDryRun}`);
+  log("info", `[INJECT] Niche: ${niche} | MinScore: ${minScore} | DryRun: ${isDryRun} | Force: ${isForce}`);
 
   // ─── Načítaj leady ────────────────────────────────────────────────────────
-  const leads = await sql<Array<{
+  let whereConditions = [`campaign_tag = '${niche.replace(/'/g, "''")}'`, "primary_email IS NOT NULL"];
+  if (!isForce) {
+    whereConditions.push("sent_to_smartlead = false");
+  }
+
+  const leads = await sql.unsafe<Array<{
     id: string; website: string; primary_email: string | null;
     official_company_name: string | null; company_name_short: string | null;
     decision_maker_name: string | null; decision_maker_last_name: string | null;
     icebreaker_sentence: string | null; ico: string | null;
     verification_status: string | null;
-  }>>`
+  }>>(`
     SELECT id, website, primary_email, official_company_name, company_name_short,
            decision_maker_name, decision_maker_last_name, icebreaker_sentence, ico, verification_status
     FROM leads
-    WHERE campaign_tag = ${niche}
-      AND primary_email IS NOT NULL
-      AND sent_to_smartlead = false
-  `;
+    WHERE ${whereConditions.join(" AND ")}
+  `);
 
   log("info", `${leads.length} leadov načítaných z DB (s emailom, neodoslaných)`);
 
@@ -113,15 +121,34 @@ async function main() {
     } else if (args["create-campaign"]) {
       // Deleguj na smartlead-create-campaign handler
       if (!isDryRun) {
-        const PROJECT_ROOT = new URL("../../../", import.meta.url).pathname;
-        const { handler } = await import(`${PROJECT_ROOT}automations/smartlead-create-campaign/handler.ts`);
+        const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+        const handlerPath = pathToFileURL(join(PROJECT_ROOT, "automations", "smartlead-create-campaign", "handler.ts")).href;
+        const { handler } = await import(handlerPath);
+        let sequences = undefined;
+        let generateAiSequences = args["use-ai-sequences"] as boolean;
+        
+        if (args["sequences-file"]) {
+          const raw = readFileSync(args["sequences-file"] as string, "utf8");
+          const parsed = JSON.parse(raw);
+          // Map sequences-file format to handler's simple sequences format
+          sequences = parsed.sequences.map((s: any) => ({
+            subject: s.seq_variants[0].subject,
+            body: s.seq_variants[0].email_body,
+            delay_in_days: s.seq_delay_details.delay_in_days
+          }));
+          generateAiSequences = false; // Override if file provided
+          log("info", `Používam sekvencie z ${args["sequences-file"]}`);
+        }
+
         const r = await handler({
-          name: `${niche}_SK`,
-          generateAiSequences: args["use-ai-sequences"] as boolean,
+          name: `${niche.toUpperCase()}_SK`,
+          generateAiSequences,
+          sequences,
           nicheDescription: `Niche: ${niche} — automaticky vytvorená cez niche-leadgen-skill`,
-          email_account_ids: [],  // handler si načíta sám z /email-accounts
+          email_account_ids: [14382544, 14382530, 14382508, 14382300], // Slovakia verified accounts
+          daily_limit: 30,
         });
-        campaignId = r?.data?.campaignId ?? null;
+        campaignId = r?.data?.campaign_id ?? null;
         if (campaignId) log("ok", `Kampaň vytvorená: ID ${campaignId}`);
         else { log("err", "Vytvorenie kampane zlyhalo."); await sql.end(); return; }
       } else {
@@ -141,17 +168,23 @@ async function main() {
   for (let i = 0; i < qualified.length; i += BATCH_SIZE) {
     const batch = qualified.slice(i, i + BATCH_SIZE);
     const payload = batch.map(lead => {
-      const nameParts = (lead.decision_maker_name ?? "").trim().split(/\s+/);
-      const lastName = nameParts.slice(1).join(" ");
+      const firstName = (lead.decision_maker_name || "").split(/\s+/)[0] || lead.company_name_short || "";
+      const lastWithSalutation = (lead.decision_maker_last_name || "").trim();
+      
+      // We prepend a space to the salutation for the custom field, 
+      // so 'Dobrý deň{{last_name_with_salutation}},' works perfectly.
+      const formattedSalutation = lastWithSalutation ? ` ${lastWithSalutation}` : "";
+
       return {
         email: lead.primary_email!,
-        first_name: nameParts[0] || lead.company_name_short || "",
-        last_name: lastName ? ` ${lastName}` : "",
+        first_name: firstName,
+        last_name: lastWithSalutation || "",
         company_name: lead.official_company_name || lead.company_name_short || "",
         website: lead.website,
         custom_fields: {
           personalized_intro: lead.icebreaker_sentence ?? "",
           ico: lead.ico ?? "",
+          last_name_with_salutation: formattedSalutation, // Fixed: includes space only if exists
         },
       };
     });

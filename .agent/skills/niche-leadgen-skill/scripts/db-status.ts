@@ -13,7 +13,7 @@ import postgres from "postgres";
 import { parseArgs } from "util";
 
 const { values: args } = parseArgs({
-  args: Bun.argv.slice(2),
+  args: (typeof Bun !== "undefined" ? Bun.argv : process.argv).slice(2),
   options: {
     niche: { type: "string" },
   },

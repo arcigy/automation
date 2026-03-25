@@ -43,6 +43,48 @@ Upravuj podľa potreby — každý riadok so `- ` je jeden región.
 - Humenné
 - Bardejov
 - Stará Ľubovňa
+- Rožňava
+- Rimavská Sobota
+- Lučenec
+- Žiar nad Hronom
+- Levice
+- Nové Zámky
+- Humenné
+- Michalovce
+- Trebišov
+- Vranov nad Topľou
+- Bardejov
+- Svidník
+- Stropkov
+- Kežmarok
+- Sabinov
+- Levoča
+- Spišská Nová Ves
+- Gelnica
+- Snina
+- Sobrance
+- Medzilaborce
+- Revúca
+- Poltár
+- Detva
+- Krupina
+- Veľký Krtíš
+- Banská Štiavnica
+- Žarnovica
+- Zlaté Moravce
+- Turčianske Teplice
+- Bytča
+- Kysucké Nové Mesto
+- Čadca
+- Námestovo
+- Tvrdošín
+- Dolný Kubín
+- Myjava
+- Nové Mesto nad Váhom
+- Bánovce nad Bebravou
+- Ilava
+- Považská Bystrica
+- Púchov
 
 ---
 

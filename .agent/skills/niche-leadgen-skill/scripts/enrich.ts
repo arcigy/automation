@@ -13,9 +13,11 @@
 import { getConfig } from "../config";
 import postgres from "postgres";
 import { parseArgs } from "util";
+import { join, dirname } from "path";
+import { fileURLToPath, pathToFileURL } from "url";
 
 const { values: args } = parseArgs({
-  args: Bun.argv.slice(2),
+  args: (typeof Bun !== "undefined" ? Bun.argv : process.argv).slice(2),
   options: {
     niche:         { type: "string" },
     limit:         { type: "string", default: "50" },
@@ -23,6 +25,7 @@ const { values: args } = parseArgs({
     "dry-run":     { type: "boolean", default: false },
     verbose:       { type: "boolean", default: false },
     quiet:         { type: "boolean", default: false },
+    force:         { type: "boolean", default: false },
   },
   strict: false,
 });
@@ -39,10 +42,18 @@ async function main() {
   const sql = postgres(cfg.DATABASE_URL);
   const limit = parseInt(args.limit as string, 10);
   const isDryRun = args["dry-run"] as boolean;
+  const isForce = args.force as boolean;
 
   // ─── Načítaj leady na enrich ───────────────────────────────────────────────
-  let whereConditions = ["l.primary_email IS NULL", "l.verification_status IS NULL"];
-  if (args.niche) whereConditions.push(`l.campaign_tag = '${(args.niche as string).replace(/'/g, "''")}'`);
+  let whereConditions = [];
+  if (!isForce) {
+    whereConditions.push("l.primary_email IS NULL");
+    whereConditions.push("l.verification_status IS NULL");
+  }
+  
+  if (args.niche) {
+    whereConditions.push(`l.campaign_tag = '${(args.niche as string).replace(/'/g, "''")}'`);
+  }
 
   const leads = await sql.unsafe<Array<{
     id: string; website: string; original_name: string | null;
@@ -78,8 +89,9 @@ async function main() {
     try {
       // ── Volanie lead-enricher handlera priamo ─────────────────────────────
       // Importujeme handler z project root aby sme nezduplikovali logiku
-      const PROJECT_ROOT = new URL("../../../", import.meta.url).pathname;
-      const { handler } = await import(`${PROJECT_ROOT}automations/lead-enricher/handler.ts`);
+      const PROJECT_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+      const handlerPath = pathToFileURL(join(PROJECT_ROOT, "automations", "lead-enricher", "handler.ts")).href;
+      const { handler } = await import(handlerPath);
 
       const result = await handler({
         leads: [{ name: lead.original_name ?? lead.website, website: lead.website }],

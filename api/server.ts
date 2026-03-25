@@ -10,16 +10,25 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { requestLogger } from "./middleware/logger";
 import { runMigrations } from "../core/db";
 import { initCrons } from "./crons";
+import { setupMcpServer } from "./mcp-server";
 
 const app = new Hono();
+
+// Inicializovať MCP server
+setupMcpServer(app);
 
 // Inicializovať úlohy a migrácie
 runMigrations().catch(e => console.error("Migration error:", e));
 initCrons();
 
 app.use("*", requestLogger);
-app.use("/trigger/*", authMiddleware); // trigger vždy chránený
-app.use("/webhook/*", authMiddleware); // webhook voliteľne
+
+// Auth sa vzťahuje len na klasické webhooky a manuálne triggere cez REST
+app.use("/trigger/*", authMiddleware);
+app.use("/webhook/*", authMiddleware);
+app.use("/api/*", authMiddleware);
+
+// /mcp/* cesty zostávajú voľné pre Claude Connectory (URL je de-facto tajná)
 
 app.route("/webhook", webhookRoutes);
 app.route("/trigger", triggerRoutes);

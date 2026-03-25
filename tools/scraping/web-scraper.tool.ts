@@ -157,76 +157,141 @@ async function scrapePage(url: string): Promise<ScrapedData | null> {
 
 // ─── Main tool ────────────────────────────────────────────────────────────────
 
+import { chromium } from "playwright";
+
+// --- Blacklist (avoid portals and social media) ---
+const DOMAIN_BLACKLIST = [
+  "facebook.com", "instagram.com", "linkedin.com", "linkedin.sk", "twitter.com", "x.com", 
+  "youtube.com", "tiktok.com", "bazos.sk", "zoznam.sk", "firmy.sk", "azet.sk", "pinterest.com",
+  "webnode.sk", "webnode.com", // (some are okay but often low quality)
+  "google.com", "google.sk", "mapy.cz"
+];
+
+function isBlacklisted(url: string): boolean {
+  try {
+    const hostname = new URL(url).hostname.replace("www.", "");
+    return DOMAIN_BLACKLIST.some(d => hostname.endsWith(d));
+  } catch {
+    return true;
+  }
+}
+
+async function scrapeWithPlaywright(url: string): Promise<ScrapedData | null> {
+  console.log(`🌐 [JS Fallback] Initializing Playwright for: ${url}`);
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext({ userAgent: USER_AGENT });
+    const page = await context.newPage();
+    
+    // Go to URL and wait for meaningful content
+    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+    
+    // Smooth scroll to bottom (triggers lazy-loaded elements)
+    await page.evaluate(async () => {
+      await new Promise(resolve => {
+        let totalHeight = 0;
+        let distance = 100;
+        let timer = setInterval(() => {
+          let scrollHeight = document.body.scrollHeight;
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+          if(totalHeight >= scrollHeight){
+            clearInterval(timer);
+            resolve(true);
+          }
+        }, 100);
+      });
+    });
+
+    const title = await page.title();
+    const bodyText = await page.evaluate(() => document.body.innerText);
+    const html = await page.content();
+
+    const emails = extractEmails(html, bodyText);
+    const phones = extractPhones(bodyText);
+
+    return {
+      url,
+      title,
+      text: bodyText.substring(0, 8000),
+      emails: [...new Set(emails)],
+      phones: [...new Set(phones)],
+      links: [] // We don't need sublinks from the browser fallback usually
+    };
+  } catch (err: any) {
+    console.warn(`⚠️ Playwright zlyhal (${url}): ${err.message}`);
+    return null;
+  } finally {
+    if (browser) await browser.close();
+  }
+}
+
 export async function webScraperTool(input: WebScraperInput): Promise<ScrapedData[]> {
   const baseUrl = normalizeUrl(input.url);
+  
+  if (isBlacklisted(baseUrl)) {
+    console.log(`🚫 Domain blacklisted (Portal/Social): ${baseUrl}`);
+    return [];
+  }
+
   const results: ScrapedData[] = [];
   const visited = new Set<string>();
 
-  // ── LOOP 1: Homepage ──────────────────────────────────────────────────────
+  // ── LOOP 1: Homepage (Fast Axios) ─────────────────────────────────────────
   console.log(`🌐 Scraping homepage: ${baseUrl}`);
   const homepage = await scrapePage(baseUrl);
-  if (!homepage) {
-    console.warn(`⚠️ Homepage scrape zlyhal.`);
-    return [];
+  
+  if (homepage) {
+    results.push(homepage);
+    visited.add(baseUrl);
   }
-  results.push(homepage);
-  visited.add(baseUrl);
 
-  // ── LOOP 2: Priority subpages (kontakt, o-nas, etc.) ─────────────────────
+  // ── LOOP 2: Priority subpages (Fast Axios) ─────────────────────────────────
   const maxDepth = input.depth ?? 1;
-  if (maxDepth > 0) {
-    // Sort: priority pages first, then others
+  if (homepage && maxDepth > 0) {
     const priorityLinks = homepage.links.filter(isPriorityPage);
     const otherLinks = homepage.links.filter(l => !isPriorityPage(l));
-    const toVisit = [...priorityLinks, ...otherLinks].slice(0, 6);
+    const toVisit = [...priorityLinks, ...otherLinks].slice(0, 5);
 
     for (const link of toVisit) {
       if (visited.has(link) || results.length >= 6) break;
       visited.add(link);
-
       console.log(`🔗 Scraping podstránka: ${link}`);
       const page = await scrapePage(link);
       if (page) results.push(page);
-
-      // Small delay to be polite
-      await new Promise(r => setTimeout(r, 500));
-    }
-  }
-
-  // ── LOOP 3: Targeted email search — guess URLs for common pages ───────────
-  const allEmails = results.flatMap(r => r.emails);
-  if (allEmails.length === 0) {
-    console.log(`📧 Žiadne emaily. Skúšam cieleně contact/kontakt stránky...`);
-    const baseDomain = new URL(baseUrl).origin;
-    const guessUrls = [
-      `${baseDomain}/kontakt`,
-      `${baseDomain}/contact`,
-      `${baseDomain}/o-nas`,
-      `${baseDomain}/about`,
-      `${baseDomain}/kontakty`,
-      `${baseDomain}/contacts`,
-      `${baseDomain}/impressum`,
-    ];
-
-    for (const guessUrl of guessUrls) {
-      if (visited.has(guessUrl)) continue;
-      visited.add(guessUrl);
-
-      const page = await scrapePage(guessUrl);
-      if (!page) continue;
-
-      results.push(page);
-      console.log(`✅ Guess URL fungoval: ${guessUrl} → ${page.emails.join(", ")}`);
-
-      // Stop early if we found emails
-      if (page.emails.length > 0) break;
       await new Promise(r => setTimeout(r, 400));
     }
   }
 
-  const finalEmails = [...new Set(results.flatMap(r => r.emails))];
-  const finalPhones = [...new Set(results.flatMap(r => r.phones))];
-  console.log(`📊 Scraping hotový: ${results.length} stránok, ${finalEmails.length} emailov, ${finalPhones.length} telefónov`);
+  // ── LOOP 3: Playwright Fallback (If no emails found yet) ────────────────────
+  const allEmails = [...new Set(results.flatMap(r => r.emails))];
+  if (allEmails.length === 0) {
+    console.log(`📉 Žiadne emaily po rýchlom scrape. Spúšťam Playwright Fallback...`);
+    const jsResult = await scrapeWithPlaywright(baseUrl);
+    if (jsResult && (jsResult.emails.length > 0 || jsResult.phones.length > 0)) {
+       console.log(`✅ [JS Fallback] Úspech! Našiel ${jsResult.emails.length} emailov.`);
+       results.push(jsResult);
+    }
+  }
+
+  // ── LOOP 4: Targeted email search (Guess check) ───────────────────────────
+  if ([...new Set(results.flatMap(r => r.emails))].length === 0) {
+    console.log(`📧 Stále žiadne emaily. Skúšam cielené guess URLs...`);
+    const baseDomain = new URL(baseUrl).origin;
+    const guessUrls = [`${baseDomain}/kontakt`, `${baseDomain}/contact`, `${baseDomain}/o-nas`, `${baseDomain}/about`];
+
+    for (const guessUrl of guessUrls) {
+      if (visited.has(guessUrl)) continue;
+      visited.add(guessUrl);
+      const page = await scrapePage(guessUrl);
+      if (page) {
+        results.push(page);
+        if (page.emails.length > 0) break;
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
+  }
 
   return results;
 }
