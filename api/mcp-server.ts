@@ -1,5 +1,5 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { ListToolsRequestSchema, CallToolRequestSchema, JSONRPCResponse, JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
+import { ListToolsRequestSchema, CallToolRequestSchema, JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { spawn } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -9,18 +9,22 @@ import { streamSSE } from "hono/streaming";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = join(__dirname, "..");
 
+/**
+ * MCP Server for Lead Generation (Native Hono SSE Implementation)
+ * Zabezpečuje 100% stabilitu na Railway a kompatibilitu s Claude.ai Cloud Connector.
+ */
 export function setupMcpServer(app: Hono) {
   const mcpServer = new Server(
-    { name: "Arcigy LeadGen", version: "2.4.0" },
+    { name: "Arcigy LeadGen Engine", version: "3.0.0" },
     { capabilities: { tools: {} } }
   );
 
-  // --- TOOLS DEFINITION ---
+  // --- REGISTRÁCIA TOOLOV ---
   mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
       {
         name: "run_leadgen_pipeline",
-        description: "Starts a fully automated lead generation campaign: Discovery (Serper) -> Enrichment (Playwright) -> Smartlead Injection.",
+        description: "Spustí komplexný Lead Generation automat (Serper -> Scraper -> AI Enricher -> Smartlead).",
         inputSchema: {
           type: "object",
           properties: {
@@ -36,74 +40,87 @@ export function setupMcpServer(app: Hono) {
     ]
   }));
 
+  // --- LOGIKA VOLANIA ---
   mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     if (name === "run_leadgen_pipeline") {
-       const { niche, query, region = "all-slovakia", target = 100, create_campaign = true } = args as any;
-       const scriptPath = join(PROJECT_ROOT, ".agent", "skills", "niche-leadgen-skill", "scripts", "full-pipeline.ts");
-       const cmdArgs = ["node", "--env-file", ".env", "--import", "tsx", scriptPath, "--niche", niche, "--query", query, "--region", region, "--target", target.toString(), create_campaign ? "--create-campaign" : "--skip-inject"].filter(Boolean);
-       spawn(cmdArgs[0], cmdArgs.slice(1), { cwd: PROJECT_ROOT, detached: true, stdio: "ignore" }).unref();
-       return { content: [{ type: "text", text: `Pipeline pre "${niche}" úspešne beží na pozadí 🚀.` }] };
+      const { niche, query, region = "all-slovakia", target = 100, create_campaign = true } = args as any;
+      const scriptPath = join(PROJECT_ROOT, ".agent", "skills", "niche-leadgen-skill", "scripts", "full-pipeline.ts");
+      const cmdArgs = ["node", "--env-file", ".env", "--import", "tsx", scriptPath, "--niche", niche, "--query", query, "--region", region, "--target", target.toString(), create_campaign ? "--create-campaign" : "--skip-inject"].filter(Boolean);
+      
+      spawn(cmdArgs[0], cmdArgs.slice(1), { cwd: PROJECT_ROOT, detached: true, stdio: "ignore" }).unref();
+      return { content: [{ type: "text", text: `Pipeline pre "${niche}" spustená na pozadí 🚀.` }] };
     }
     throw new Error(`Tool "${name}" not found.`);
   });
 
-  // --- SSE SESSIONS ---
-  const sessions = new Map<string, any>();
+  // --- SSE SESSION MANAGEMENT (Bez 101 status kódu) ---
+  const activeClients = new Map<string, any>();
 
+  // 1. SSE Connection (GET)
   app.get("/mcp/sse", (c) => {
     const sessionId = Math.random().toString(36).slice(2);
-    console.log(`🔗 [MCP] Client connected: ${sessionId}`);
+    console.log(`📡 [MCP] Napojený nový Claude klient (Session: ${sessionId})`);
 
     return streamSSE(c, async (stream) => {
-      // 1. Send endpoint for POST messages
+      // Zapíšeme URL kam má Claude posielať POST správy
       await stream.writeSSE({
         event: "endpoint",
         data: `/mcp/messages?sessionId=${sessionId}`
       });
 
-      // 2. Register stream callback
-      sessions.set(sessionId, stream);
+      // Uložíme si stream na posielanie odpovedí
+      activeClients.set(sessionId, stream);
 
-      // Heartbeat
-      const interval = setInterval(() => stream.writeSSE({ event: "ping", data: "heartbeat" }), 15000);
+      // Heartbeat interval (životne dôležité na Railway aby nestopol connection)
+      const heartbeat = setInterval(() => {
+        try {
+          stream.writeSSE({ event: "ping", data: "heartbeat" });
+        } catch {
+          clearInterval(heartbeat);
+          activeClients.delete(sessionId);
+        }
+      }, 20000);
 
       stream.onAbort(() => {
-        clearInterval(interval);
-        sessions.delete(sessionId);
-        console.log(`❌ [MCP] Client disconnected: ${sessionId}`);
+        clearInterval(heartbeat);
+        activeClients.delete(sessionId);
+        console.log(`🔌 [MCP] Claude klient sa odpojil (Session: ${sessionId})`);
       });
 
-      // Keep connection open
-      while (sessions.has(sessionId)) {
+      // Udržujeme stream nažive
+      while (activeClients.has(sessionId)) {
         await new Promise(r => setTimeout(r, 1000));
       }
     });
   });
 
+  // 2. Message Exchange (POST)
   app.post("/mcp/messages", async (c) => {
     const sessionId = c.req.query("sessionId");
-    const stream = sessions.get(sessionId || "");
-    if (!stream) return c.json({ error: "Session missing" }, 404);
+    const stream = activeClients.get(sessionId || "");
+    if (!stream) return c.json({ error: "Session missing or expired" }, 404);
 
-    const message = await c.req.json();
-    
-    // Process message through Server
-    // Server doesn't have a single .onmessage that returns JSONRPCResponse easily if it's SSE-style.
-    // However, we can use a "bridge" approach:
-    
     try {
-      // For MCP 1.0, we just need to return the response
-      // We'll mimic the SSE response by writing it back to the stream
-      const response = await mcpServer.onmessage(message as JSONRPCMessage);
+      const message = await c.req.json() as JSONRPCMessage;
       
-      if (response && stream) {
-        await stream.writeSSE({ data: JSON.stringify(response) });
+      // Spracovanie cez MCP Server
+      const result = await mcpServer.onmessage(message);
+      
+      if (result) {
+        // Výsledok pošleme späť cez ten istý SSE stream (toto je ten magic)
+        await stream.writeSSE({ data: JSON.stringify(result) });
       }
+      
+      return c.body(null, 204);
     } catch (e: any) {
-      console.error(`MCP Error: ${e.message}`);
+      console.error(`❌ [MCP] Message error: ${e.message}`);
+      return c.json({ error: e.message }, 500);
     }
-
-    return c.body(null, 204);
   });
 }
+
+/**
+ * Poznámka: Tento súbor musí byť importovaný v api/server.ts 
+ * a musí tam byť zavolaný setupMcpServer(app).
+ */
