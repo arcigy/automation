@@ -13,6 +13,7 @@ export interface ScrapedData {
 export interface WebScraperInput {
   url: string;
   depth?: number;
+  skipPlaywright?: boolean;
 }
 
 // ─── Email extraction ────────────────────────────────────────────────────────
@@ -39,13 +40,13 @@ function extractEmails(html: string, text: string): string[] {
 
   // Obfuscated pattern 1: word [at] word.tld
   let m: RegExpExecArray | null;
-  const p1 = /([a-zA-Z0-9._%+\-]+)\s*[\[\(]?\s*(?:at|AT)\s*[\]\)]?\s*([a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g;
+  const p1 = /([a-zA-Z0-9._%+\-]+)\s+[\[\(]?\s*(?:at|AT)\s*[\]\)]?\s+([a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g;
   while ((m = p1.exec(text)) !== null) {
     found.add(`${m[1]}@${m[2]}`.toLowerCase());
   }
 
-  // Obfuscated pattern 2: zavinac / (a) / [a]
-  const p2 = /([a-zA-Z0-9._%+\-]+)\s*(?:\(zavinač\)|\(zavinac\)|\(a\)|\[a\]|\(at\))\s*([a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/gi;
+  // Obfuscated pattern 2 & 3: zavinac / (a) / [a] and spaces
+  const p2 = /([a-zA-Z0-9._%+\-]+)\s*(?:\(zavinač\)|\(zavinac\)|\(a\)|\[a\]|\(at\)|\s*@\s*)\s*([a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/gi;
   while ((m = p2.exec(text)) !== null) {
     found.add(`${m[1]}@${m[2]}`.toLowerCase());
   }
@@ -72,12 +73,31 @@ function extractEmails(html: string, text: string): string[] {
 
 function extractPhones(text: string): string[] {
   const found = new Set<string>();
-  // Slovak/Czech phone patterns
-  const phoneRegex = /(?:\+421|\+420|00421|00420)?\s*(?:\d[\s\-]?){8,11}\d/g;
+  
+  // 1. Regex for raw matches (captures potential phone strings)
+  const phoneRegex = /(?:\+421|\+420|00421|00420|09\d|0[2-6]\d)\s*(?:\d[\s\-]?){6,10}\d/g;
   const matches = text.match(phoneRegex) || [];
+
   for (const p of matches) {
-    const clean = p.replace(/\s+/g, " ").trim();
-    if (clean.replace(/\D/g, "").length >= 9) found.add(clean);
+    // Clean to digits only for length validation
+    const digits = p.replace(/\D/g, "");
+    
+    // Normalization logic
+    let clean = p.replace(/\s+/g, " ").trim();
+    
+    // Slovak Mobile: starts with 09 (10 digits total)
+    if (digits.startsWith("09") && digits.length === 10) {
+      found.add(clean);
+    } 
+    // Slovak/Czech with prefix: starts with +42x (12 digits) or 0042x (14 digits)
+    else if (((digits.startsWith("421") || digits.startsWith("420")) && digits.length === 12) ||
+             ((digits.startsWith("00421") || digits.startsWith("00420")) && digits.length === 14)) {
+      found.add(clean);
+    }
+    // Slovak Landline: starts with 02, 0[3-6] (9 or 10 digits total)
+    else if (/^0[2-6]/.test(digits) && (digits.length === 9 || digits.length === 10)) {
+       found.add(clean);
+    }
   }
   return [...found].slice(0, 3);
 }
@@ -87,7 +107,7 @@ function extractPhones(text: string): string[] {
 const PRIORITY_KEYWORDS = [
   "kontakt", "contact", "o-nas", "o nas", "about", "team",
   "impressum", "impresum", "gdpr", "ochrana-udajov", "footer",
-  "kto-sme", "kto sme", "nas", "spolocnost"
+  "kto-sme", "kto sme", "nas", "spolocnost", "kontakty"
 ];
 
 function isPriorityPage(url: string): boolean {
@@ -103,7 +123,8 @@ async function scrapePage(url: string): Promise<ScrapedData | null> {
   try {
     const res = await axios.get(url, {
       headers: { "User-Agent": USER_AGENT },
-      timeout: 12000,
+      timeout: 8000,
+      proxy: false,
       validateStatus: s => s < 400,
       maxRedirects: 5
     });
@@ -157,14 +178,16 @@ async function scrapePage(url: string): Promise<ScrapedData | null> {
 
 // ─── Main tool ────────────────────────────────────────────────────────────────
 
-import { chromium } from "playwright";
+let playwrightDisabledUntil = 0;
 
 // --- Blacklist (avoid portals and social media) ---
 const DOMAIN_BLACKLIST = [
   "facebook.com", "instagram.com", "linkedin.com", "linkedin.sk", "twitter.com", "x.com", 
   "youtube.com", "tiktok.com", "bazos.sk", "zoznam.sk", "firmy.sk", "azet.sk", "pinterest.com",
   "webnode.sk", "webnode.com", // (some are okay but often low quality)
-  "google.com", "google.sk", "mapy.cz"
+  "google.com", "google.sk", "mapy.cz",
+  "wikipedia.org", "openstreetmap.org", "tripadvisor.com", "trip.com",
+  "booking.com", "airbnb.com", "hotels.com", "trivago.com"
 ];
 
 function isBlacklisted(url: string): boolean {
@@ -179,13 +202,20 @@ function isBlacklisted(url: string): boolean {
 async function scrapeWithPlaywright(url: string): Promise<ScrapedData | null> {
   console.log(`🌐 [JS Fallback] Initializing Playwright for: ${url}`);
   let browser;
+
+  if (Date.now() < playwrightDisabledUntil) {
+    console.log(`[JS Fallback] Playwright dočasne vypnutý (cooldown).`);
+    return null;
+  }
+
   try {
+    const { chromium } = await import("playwright");
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext({ userAgent: USER_AGENT });
     const page = await context.newPage();
     
     // Go to URL and wait for meaningful content
-    await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+    await page.goto(url, { waitUntil: "networkidle", timeout: 20000 });
     
     // Smooth scroll to bottom (triggers lazy-loaded elements)
     await page.evaluate(async () => {
@@ -221,9 +251,16 @@ async function scrapeWithPlaywright(url: string): Promise<ScrapedData | null> {
     };
   } catch (err: any) {
     console.warn(`⚠️ Playwright zlyhal (${url}): ${err.message}`);
+    if (String(err?.message ?? "").includes("EPERM") || String(err?.message ?? "").includes("spawn")) {
+      playwrightDisabledUntil = Date.now() + 30 * 60 * 1000;
+    }
     return null;
   } finally {
-    if (browser) await browser.close();
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {}
+    }
   }
 }
 
@@ -266,12 +303,24 @@ export async function webScraperTool(input: WebScraperInput): Promise<ScrapedDat
 
   // ── LOOP 3: Playwright Fallback (If no emails found yet) ────────────────────
   const allEmails = [...new Set(results.flatMap(r => r.emails))];
-  if (allEmails.length === 0) {
+  if (allEmails.length === 0 && !input.skipPlaywright) {
     console.log(`📉 Žiadne emaily po rýchlom scrape. Spúšťam Playwright Fallback...`);
-    const jsResult = await scrapeWithPlaywright(baseUrl);
+    
+    // Choose the best link to try with Playwright (prioritize contact page)
+    const allLinks = [...new Set(results.flatMap(r => r.links))];
+    const contactLinks = allLinks.filter(isPriorityPage);
+    const targetUrl = contactLinks.length > 0 ? contactLinks[0] : baseUrl;
+
+    const jsResult = await scrapeWithPlaywright(targetUrl);
     if (jsResult && (jsResult.emails.length > 0 || jsResult.phones.length > 0)) {
-       console.log(`✅ [JS Fallback] Úspech! Našiel ${jsResult.emails.length} emailov.`);
+       console.log(`✅ [JS Fallback] Úspech na ${targetUrl}! Našiel ${jsResult.emails.length} emailov.`);
        results.push(jsResult);
+    } else if (targetUrl !== baseUrl) {
+       // Also fall back to homepage if contact page failed in JS
+       const jsResultHome = await scrapeWithPlaywright(baseUrl);
+       if (jsResultHome && jsResultHome.emails.length > 0) {
+         results.push(jsResultHome);
+       }
     }
   }
 

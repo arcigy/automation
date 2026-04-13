@@ -17,7 +17,7 @@ async function wait(ms: number): Promise<void> {
 async function callGeminiWithRetry(
   systemPrompt: string,
   userMessage: string,
-  maxRetries = 4
+  maxRetries = 2
 ): Promise<{ content: string } | null> {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -33,7 +33,7 @@ async function callGeminiWithRetry(
       const isRateLimit = msg.includes("503") || msg.includes("429") || msg.includes("overloaded") || msg.includes("quota");
 
       if (isRateLimit && attempt < maxRetries) {
-        const delay = attempt * 12000; // 12s, 24s, 36s ...
+        const delay = attempt * 4000; // 4s, 8s ...
         console.log(`⏳ Gemini rate limit (pokus ${attempt}/${maxRetries}). Čakám ${delay / 1000}s...`);
         await wait(delay);
         continue;
@@ -42,6 +42,18 @@ async function callGeminiWithRetry(
     }
   }
   return null;
+}
+
+function isValidEmail(email: string): boolean {
+  const e = (email || "").trim().toLowerCase();
+  if (!e) return false;
+  if (e.length < 6) return false;
+  if (e.includes("..")) return false;
+  if (e.includes("example")) return false;
+  if (e.endsWith(".png") || e.endsWith(".jpg") || e.endsWith(".svg")) return false;
+  // Common junk from snippet parsing
+  if (e.endsWith(".http") || e.endsWith(".https") || e.endsWith(".kompletn")) return false;
+  return /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/.test(e);
 }
 
 /** Tries to extract a valid IČO from raw AI text – cleans up common OCR errors */
@@ -127,6 +139,8 @@ export async function handler(
   ).values());
 
   const enrichedLeads: EnrichedLead[] = [];
+  let geminiUnavailableStreak = 0;
+  let geminiCircuitOpenUntil = 0;
 
   try {
     for (const lead of uniqueDomainLeads) {
@@ -135,8 +149,8 @@ export async function handler(
       console.log(`${"=".repeat(60)}`);
 
       try {
-        // Polite delay between leads
-        await wait(2500);
+        // Polite delay between leads (keep small to avoid multi-hour runs)
+        await wait(800);
 
         // ══════════════════════════════════════════════════════
         // LOOP 1: Web scraping (homepage + subpages + email guess)
@@ -160,14 +174,57 @@ export async function handler(
           .join("\n\n");
 
         // Collect all emails found across all pages
-        const allEmailsRaw = [...new Set(scrapeResults.flatMap(r => r.emails))];
+        let allEmailsRaw = [...new Set(scrapeResults.flatMap(r => r.emails))].filter(isValidEmail);
         const allPhones = [...new Set(scrapeResults.flatMap(r => r.phones))];
         console.log(`[Loop 1] Výsledok: ${scrapeResults.length} stránok, ${allEmailsRaw.length} emailov: ${allEmailsRaw.join(", ")}`);
+
+        // Ak nie sú žiadne kontakty a obsah je slabý, nemá zmysel volať AI
+        if (allEmailsRaw.length === 0 && allPhones.length === 0 && combinedText.length < 800) {
+          console.log(`⏭️  Bez emailu/telefónu + málo obsahu. Preskakujem bez AI.`);
+          await sql`
+            UPDATE leads
+            SET verification_status = 'failed',
+                verification_notes = 'No contacts found + low content signal',
+                updated_at = now()
+            WHERE website = ${lead.website}
+          `;
+          continue;
+        }
+
+        // ══════════════════════════════════════════════════════
+        // LOOP 1.5: SERPER FALLBACK (IF NO EMAILS)
+        // ══════════════════════════════════════════════════════
+        if (allEmailsRaw.length === 0) {
+          console.log(`\n[Loop 1.5] Emaily nenájdené. Spúšťam Serper (Google) fallback...`);
+          try {
+            const { serperSearchTool } = await import("../../tools/google/serper-search.tool");
+            const domainOnly = new URL(lead.website).hostname.replace("www.", "");
+            const query = `"${domainOnly}" e-mail OR kontakt OR email`;
+            const searchRes = await serperSearchTool({ query, limit: 3 });
+            const serperText = searchRes.map((r: any) => r.snippet + " " + r.title).join(" ");
+            
+            const fallbackEmails = serperText.match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g) || [];
+            const validFallbacks = fallbackEmails.filter(isValidEmail);
+            
+            if (validFallbacks.length > 0) {
+              allEmailsRaw.push(...validFallbacks);
+              allEmailsRaw = [...new Set(allEmailsRaw)];
+              console.log(`✅ [Serper Fallback] Úspech v Googli: ${allEmailsRaw.join(", ")}`);
+            } else {
+              console.log(`❌ [Serper Fallback] Žiadne emaily nenájdené ani v Google snippetoch.`);
+            }
+          } catch (err: any) {
+            console.log(`⚠️  [Serper Fallback] Zlyhanie: ${err.message}`);
+          }
+        }
 
         // ══════════════════════════════════════════════════════
         // LOOP 2: AI extraction
         // ══════════════════════════════════════════════════════
         console.log(`\n[Loop 2] AI extrakcia (Gemini)...`);
+        if (Date.now() < geminiCircuitOpenUntil) {
+          console.log(`⏭️  Gemini je dočasne vypnuté (circuit). Preskakujem AI.`);
+        }
         const systemPrompt = `You are a professional lead researcher. Extract structured business data from Slovak company websites.
 
 RULES:
@@ -212,23 +269,105 @@ ${combinedText.substring(0, 12000)}`;
         console.log(`\n💎 [Loop 2] Gemini UserMessage (prvých 150zn): "${userMessage.substring(0, 150)}..."`);
 
 
-        let aiRes = await callGeminiWithRetry(systemPrompt, userMessage);
-        if (!aiRes) throw new Error("Gemini nevrátil odpoveď po všetkých retries.");
+        let parsed: any = null;
+        if (Date.now() >= geminiCircuitOpenUntil) {
+          try {
+            const aiRes = await callGeminiWithRetry(systemPrompt, userMessage);
+            if (!aiRes) throw new Error("Gemini nevrátil odpoveď po všetkých retries.");
 
-        const rawContent = aiRes.content.trim();
-        let parsed: any;
+            const rawContent = aiRes.content.trim();
+            try {
+              // Robustnejšie parsovanie: nájdi prvý { a posledný }
+              const start = rawContent.indexOf("{");
+              const end = rawContent.lastIndexOf("}");
+              if (start === -1 || end === -1) throw new Error("No JSON boundaries found");
+              const jsonStr = rawContent.substring(start, end + 1);
+              parsed = JSON.parse(jsonStr);
+            } catch (err: any) {
+              console.error(`❌ JSON Parse Error: ${err.message}`);
+              console.error(`📄 RAW CONTENT: ${rawContent}`);
+              throw new Error(`Zlyhalo parsovanie JSON-u z AI: ${err.message}`);
+            }
 
-        try {
-          // Robustnejšie parsovanie: nájdi prvý { a posledný }
-          const start = rawContent.indexOf("{");
-          const end = rawContent.lastIndexOf("}");
-          if (start === -1 || end === -1) throw new Error("No JSON boundaries found");
-          const jsonStr = rawContent.substring(start, end + 1);
-          parsed = JSON.parse(jsonStr);
-        } catch (err: any) {
-          console.error(`❌ JSON Parse Error: ${err.message}`);
-          console.error(`📄 RAW CONTENT: ${rawContent}`);
-          throw new Error(`Zlyhalo parsovanie JSON-u z AI: ${err.message}`);
+            geminiUnavailableStreak = 0;
+          } catch (e: any) {
+            const msg = e?.message || "";
+            const isUnavailable =
+              msg.includes("503") ||
+              msg.includes("429") ||
+              msg.includes("UNAVAILABLE") ||
+              msg.includes("overloaded") ||
+              msg.includes("quota");
+
+            if (isUnavailable) {
+              geminiUnavailableStreak++;
+              if (geminiUnavailableStreak >= 2) {
+                geminiCircuitOpenUntil = Date.now() + 5 * 60 * 1000;
+              }
+            } else {
+              geminiUnavailableStreak = 0;
+            }
+
+            console.warn(`⚠️  Gemini zlyhalo: ${msg}`);
+          }
+        }
+
+        // Fallback: keď nemáme parsed (Gemini down), uložíme aspoň email a pokračujeme
+        if (!parsed) {
+          const bestEmail = allEmailsRaw[0];
+          const minimal: EnrichedLead = {
+            original_name: lead.name,
+            company_name_short: lead.name,
+            website: lead.website,
+            decision_maker_name: undefined,
+            decision_maker_last_name: undefined,
+            email: bestEmail,
+            business_facts: [],
+            icebreaker_sentence: undefined,
+            ico: undefined,
+            official_company_name: undefined,
+            address: undefined,
+            orsr_verified: false,
+            verification_status: bestEmail ? "flagged" : "failed",
+            verification_notes: bestEmail ? "Gemini unavailable - stored email only" : "No email and Gemini unavailable",
+            campaign_tag: campaignTag
+          };
+
+          enrichedLeads.push(minimal);
+
+          try {
+            await sql`
+              INSERT INTO leads (
+                website, original_name, company_name_short,
+                decision_maker_name, decision_maker_last_name,
+                primary_email, business_facts,
+                verification_status, verification_notes, campaign_tag, updated_at
+              ) VALUES (
+                ${minimal.website},
+                ${minimal.original_name},
+                ${minimal.company_name_short},
+                ${null},
+                ${""},
+                ${minimal.email || null},
+                ${sql.json([])},
+                ${minimal.verification_status},
+                ${minimal.verification_notes || null},
+                ${campaignTag},
+                now()
+              )
+              ON CONFLICT (website) DO UPDATE SET
+                primary_email = COALESCE(leads.primary_email, EXCLUDED.primary_email),
+                verification_status = EXCLUDED.verification_status,
+                verification_notes = EXCLUDED.verification_notes,
+                campaign_tag = COALESCE(leads.campaign_tag, EXCLUDED.campaign_tag),
+                updated_at = EXCLUDED.updated_at;
+            `;
+          } catch (dbErr) {
+            console.error(`❌ DB zlyhal pre minimal-lead ${lead.website}:`, dbErr);
+          }
+
+          console.log(`\n💾 DB uložené (minimal): ${lead.website} | Email: ${minimal.email || "N/A"}`);
+          continue;
         }
         
         console.log(`[Loop 2] AI výsledok: name="${parsed.decision_maker_full_name}", IČO="${parsed.ico}", company="${parsed.official_company_name}"`);

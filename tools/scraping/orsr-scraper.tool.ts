@@ -70,17 +70,18 @@ async function wait(ms: number): Promise<void> {
     return new Promise(r => setTimeout(r, ms));
 }
 
-async function fetchWithRetry(url: string, headers: Record<string, string>, retries = 3): Promise<Buffer> {
+async function fetchWithRetry(url: string, headers: Record<string, string>, retries = 2): Promise<Buffer> {
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
             const res = await axios.get(url, {
                 responseType: "arraybuffer",
                 headers,
-                timeout: 15000,
+                timeout: 7000,
+                proxy: false,
                 validateStatus: s => s < 500
             });
             if (res.status === 429 || res.status === 503) {
-                const delay = attempt * 5000;
+                const delay = attempt * 3000;
                 console.warn(`⏳ Rate limit (${res.status}) na ${url}. Čakám ${delay}ms...`);
                 await wait(delay);
                 continue;
@@ -88,7 +89,7 @@ async function fetchWithRetry(url: string, headers: Record<string, string>, retr
             return Buffer.from(res.data);
         } catch (e: any) {
             if (attempt === retries) throw e;
-            const delay = attempt * 3000;
+            const delay = attempt * 1500;
             console.warn(`⚠️ Fetch pokus ${attempt}/${retries} zlyhal pre ${url}: ${e.message}. Čakám ${delay}ms...`);
             await wait(delay);
         }
@@ -319,6 +320,7 @@ export async function zrsrGetByName(companyName: string): Promise<OrsrResult | n
             },
             timeout: 15000,
             responseType: "arraybuffer",
+            proxy: false,
             validateStatus: s => s < 500
         });
 
@@ -481,5 +483,3 @@ export async function orsrMasterLookup(input: OrsrLookupInput): Promise<OrsrResu
     console.log(`❌ Firma nenájdená (IČO: ${ico}, Meno: ${inputName})`);
     return null;
 }
-
-

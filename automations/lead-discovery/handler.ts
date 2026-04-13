@@ -24,11 +24,18 @@ const DOMAIN_BLACKLIST = new Set([
   "facebook.com", "instagram.com", "linkedin.com", "twitter.com",
   "youtube.com", "google.com", "maps.google.com", "yelp.com",
   "profesia.sk", "jobs.sk", "topky.sk", "sme.sk", "pravda.sk",
-  "wikipedia.org", "gov.sk", "slovensko.sk", "nbs.sk", "statistics.sk"
+  "wikipedia.org", "openstreetmap.org", "tripadvisor.com", "trip.com",
+  "booking.com", "airbnb.com", "hotels.com", "trivago.com",
+  "gov.sk", "slovensko.sk", "nbs.sk", "statistics.sk"
 ]);
 
 function isBlacklistedDomain(domain: string): boolean {
-  return DOMAIN_BLACKLIST.has(domain) || domain.length < 4;
+  if (domain.length < 4) return true;
+  for (const blocked of DOMAIN_BLACKLIST) {
+    if (domain === blocked) return true;
+    if (domain.endsWith(`.${blocked}`)) return true;
+  }
+  return false;
 }
 
 // ─── Main Handler ─────────────────────────────────────────────────────────────

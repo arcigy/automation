@@ -21,6 +21,11 @@ niche: autoservisy
   serper_queries: ["oprava áut servis", "autoopravovňa pneuservis", "llakovacie stredisko"]
   blacklist_keywords: ["autobazar", "autohaus", "škoda auto", "volkswagen dealership"]
 
+niche: dom-na-kluc
+  maps_queries: ["dom na kľúč", "stavba domu na kľúč", "rodinné domy na kľúč", "montovaný dom na kľúč", "drevodomy na kľúč"]
+  serper_queries: ["\"dom na kľúč\" stavba", "\"stavba domu na kľúč\" kontakt", "\"rodinné domy na kľúč\" firma"]
+  blacklist_keywords: ["topreality", "nehnuteľnosti", "bazos", "wikipedia", "openstreetmap", "booking", "tripadvisor"]
+
 niche: kadernictva
   maps_queries: ["kaderníctvo", "kadernícky salón", "hair salon", "barber shop"]
   serper_queries: ["kadernícky salón objednávky", "kaderník salon SK"]

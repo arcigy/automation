@@ -131,7 +131,10 @@ async function main() {
   await sql.end();
 }
 
-main().catch(e => {
+main().then(() => {
+  // Some environments keep the event loop alive due to loader/tooling handles.
+  process.exit(0);
+}).catch(e => {
   console.error("❌ Kritická chyba:", e.message);
   process.exit(1);
 });

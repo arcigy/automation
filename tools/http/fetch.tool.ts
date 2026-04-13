@@ -1,3 +1,5 @@
+import axios from "axios";
+
 export interface FetchToolInput {
   url: string;
   method?: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
@@ -12,35 +14,32 @@ export interface FetchToolOutput {
   headers: Record<string, string>;
 }
 
+function shouldUseProxyFromEnv(): boolean {
+  const v = (process.env.ARCIGY_FETCH_USE_PROXY ?? "").toLowerCase().trim();
+  return v === "1" || v === "true" || v === "yes";
+}
+
 export async function fetchTool(
   input: FetchToolInput,
 ): Promise<FetchToolOutput> {
-  const controller = new AbortController();
-  const timeout = setTimeout(
-    () => controller.abort(),
-    input.timeoutMs ?? 30000,
-  );
+  const res = await axios.request({
+    url: input.url,
+    method: input.method ?? "GET",
+    headers: { "Content-Type": "application/json", ...input.headers },
+    data: input.body,
+    timeout: input.timeoutMs ?? 30000,
+    validateStatus: () => true,
+    proxy: shouldUseProxyFromEnv() ? undefined : false,
+  });
 
-  try {
-    const res = await fetch(input.url, {
-      method: input.method ?? "GET",
-      headers: { "Content-Type": "application/json", ...input.headers },
-      body: input.body ? JSON.stringify(input.body) : undefined,
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    let data;
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = text;
-    }
-    return {
-      status: res.status,
-      data,
-      headers: Object.fromEntries(res.headers.entries()),
-    };
-  } finally {
-    clearTimeout(timeout);
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(res.headers ?? {})) {
+    headers[k] = Array.isArray(v) ? v.join(",") : String(v);
   }
+
+  return {
+    status: res.status,
+    data: res.data,
+    headers,
+  };
 }
