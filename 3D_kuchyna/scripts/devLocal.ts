@@ -1,10 +1,13 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import process from "node:process";
 
-const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
+const nodeBin = process.execPath;
+const tsxCli = path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+const viteCli = path.join(process.cwd(), "node_modules", "vite", "bin", "vite.js");
 
-const worker = spawn(npmBin, ["run", "worker:dev"], { stdio: "inherit", cwd: process.cwd() });
-const vite = spawn(npmBin, ["run", "dev"], { stdio: "inherit", cwd: process.cwd() });
+const worker = spawn(nodeBin, [tsxCli, "scripts/worker.ts"], { stdio: "inherit", cwd: process.cwd() });
+const vite = spawn(nodeBin, [viteCli, "--host", "127.0.0.1", "--port", "5180"], { stdio: "inherit", cwd: process.cwd() });
 
 const shutdown = () => {
   try {
@@ -36,4 +39,3 @@ const onExit = (code: number | null, label: string) => {
 
 worker.on("exit", (code) => onExit(code, "worker"));
 vite.on("exit", (code) => onExit(code, "vite"));
-
