@@ -22,3 +22,6 @@ simple-runner.ts
 test-trigger-runner.ts
 /tmp/*
 !/tmp/.gitkeep
+
+3D_kuchyna/exports/*
+!3D_kuchyna/exports/.gitkeep

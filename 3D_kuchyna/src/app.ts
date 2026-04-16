@@ -11,6 +11,7 @@ import { createShelvesControls } from "./ui/createShelvesControls";
 import { createCornerShelfLowerControls } from "./ui/createCornerShelfLowerControls";
 import { createSsgiPipeline, type SsgiPipeline } from "./rendering/ssgiPipeline";
 import { createPhotoPathTracer, type PhotoPathTracer } from "./rendering/photoPathTracer";
+import { exportSceneToJson } from "./scene/exportSceneJson";
 
 type AppArgs = {
   viewerEl: HTMLElement;
@@ -26,6 +27,7 @@ type AppArgs = {
   measureReadoutEl: HTMLElement;
   resetBtn: HTMLButtonElement;
   exportBtn: HTMLButtonElement;
+  exportSceneBtn: HTMLButtonElement;
 };
 
 export function startApp(args: AppArgs) {
@@ -41,10 +43,12 @@ export function startApp(args: AppArgs) {
     getCamera,
     getControls,
     setHdri,
+    getHdriSettings,
     setDaylightIntensity,
     setShadowAlgorithm,
     getShadowAlgorithm,
     setWindowOpening,
+    getWindowOpening,
     setWindowCutout,
     updateLighting,
     getLightingRevision
@@ -1530,6 +1534,44 @@ export function startApp(args: AppArgs) {
     } catch {
       args.copyStatusEl.textContent = "Copy failed (browser permission).";
     }
+  });
+
+  const downloadJson = (json: string, filename: string) => {
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  args.exportSceneBtn.addEventListener("click", async () => {
+    args.copyStatusEl.textContent = "";
+
+    const hdri = getHdriSettings();
+    const opening = getWindowOpening();
+    const sunDirection = opening ? opening.inwardNormal.clone().multiplyScalar(-1).normalize() : undefined;
+
+    const payload = exportSceneToJson({
+      scene,
+      camera: cam(),
+      environment: { hdriPath: hdri.id, hdriStrength: hdri.envIntensity },
+      lighting: { sunDirection, sunStrength: 3.0, sunAngle: 0.8 },
+      includeInvisible: false
+    });
+
+    const json = JSON.stringify(payload, null, 2);
+    args.exportOutEl.value = json;
+
+    try {
+      await navigator.clipboard.writeText(json);
+      args.copyStatusEl.textContent = "Copied.";
+    } catch {
+      args.copyStatusEl.textContent = "Copy failed (browser permission).";
+    }
+
+    downloadJson(json, "scene.blender.v1.json");
   });
 
   args.copyBtn.addEventListener("click", async () => {

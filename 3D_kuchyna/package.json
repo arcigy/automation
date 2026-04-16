@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5180",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "blender:from-json": "tsx scripts/blender/fromJson.ts"
   },
   "dependencies": {
     "postprocessing": "^6.39.0",
@@ -16,7 +17,9 @@
     "three-mesh-bvh": "^0.9.9"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "typescript": "^5.5.4",
+    "tsx": "^4.19.2",
     "vite": "^5.4.0"
   }
 }

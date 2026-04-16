@@ -533,10 +533,20 @@ export function createScene(container: HTMLElement) {
     setSize,
     setViewMode,
     setHdri,
+    getHdriSettings: () => ({ id: hdriId, envIntensity: hdriEnvIntensity }),
     setDaylightIntensity,
     setShadowAlgorithm: setShadowAlgorithmPublic,
     getShadowAlgorithm: () => shadowAlgorithm,
     setWindowOpening,
+    getWindowOpening: () =>
+      windowOpening
+        ? {
+            center: windowOpening.center.clone(),
+            inwardNormal: windowOpening.inwardNormal.clone(),
+            width: windowOpening.width,
+            height: windowOpening.height
+          }
+        : null,
     setWindowCutout,
     updateLighting,
     getLightingRevision: () => lightingRevision,
