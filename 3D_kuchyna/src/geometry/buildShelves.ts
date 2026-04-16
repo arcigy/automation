@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import type { ShelvesParams } from "../model/cabinetTypes";
 import { computeShelfHeightsFromGaps } from "../model/cabinetTypes";
+import { getPbrMaterialWorldSizeM, getPbrWoodMaterial } from "../materials/pbrMaterials";
+import { applyBoxGrainUv } from "../materials/uvGrain";
 
 const MM_TO_M = 0.001;
 
@@ -16,11 +18,13 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
   const plinthH = p.plinthHeight * MM_TO_M;
   const shelfT = p.shelfThickness * MM_TO_M;
 
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: parseHexColor(p.materials.bodyColor),
-    roughness: 0.85,
-    metalness: 0.0
-  });
+  const bodyMat = p.materials.bodyPbr
+    ? getPbrWoodMaterial({ fallbackColor: p.materials.bodyColor, ref: p.materials.bodyPbr })
+    : new THREE.MeshStandardMaterial({
+        color: parseHexColor(p.materials.bodyColor),
+        roughness: 0.85,
+        metalness: 0.0
+      });
   const frontMat = new THREE.MeshStandardMaterial({
     color: parseHexColor(p.materials.frontColor),
     roughness: 0.65,
@@ -28,18 +32,36 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
   });
   const hingeMat = new THREE.MeshStandardMaterial({ color: 0x4a4f5a, roughness: 0.5, metalness: 0.15 });
 
-  const setPartMeta = (mesh: THREE.Mesh, dimsM: { width: number; height: number; depth: number }) => {
+  const setPartMeta = (
+    mesh: THREE.Mesh,
+    dimsM: { width: number; height: number; depth: number },
+    grainAlong: "width" | "height" | "depth" | "none" = "none"
+  ) => {
     mesh.userData.selectable = true;
     mesh.userData.dimensionsMm = {
       width: dimsM.width / MM_TO_M,
       height: dimsM.height / MM_TO_M,
       depth: dimsM.depth / MM_TO_M
     };
+    mesh.userData.grainAlong = grainAlong;
+    if (p.materials.bodyPbr) {
+      applyBoxGrainUv(
+        mesh.geometry as THREE.BufferGeometry,
+        { x: dimsM.width, y: dimsM.height, z: dimsM.depth },
+        grainAlong,
+        { texScaleM: getPbrMaterialWorldSizeM(p.materials.bodyPbr.id) }
+      );
+    }
   };
 
-  const setPartMetaMm = (mesh: THREE.Mesh, dimsMm: { width: number; height: number; depth: number }) => {
+  const setPartMetaMm = (
+    mesh: THREE.Mesh,
+    dimsMm: { width: number; height: number; depth: number },
+    grainAlong: "width" | "height" | "depth" | "none" = "none"
+  ) => {
     mesh.userData.selectable = true;
     mesh.userData.dimensionsMm = { ...dimsMm };
+    mesh.userData.grainAlong = grainAlong;
   };
 
   const openingH = height - plinthH;
@@ -50,13 +72,13 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
   const leftSide = new THREE.Mesh(sideGeo, bodyMat);
   leftSide.name = "leftSide";
   leftSide.position.set(-(width / 2 - boardT / 2), plinthH + sideH / 2, 0);
-  setPartMeta(leftSide, { width: boardT, height: sideH, depth });
+  setPartMeta(leftSide, { width: boardT, height: sideH, depth }, "height");
   g.add(leftSide);
 
   const rightSide = new THREE.Mesh(sideGeo, bodyMat);
   rightSide.name = "rightSide";
   rightSide.position.set(width / 2 - boardT / 2, plinthH + sideH / 2, 0);
-  setPartMeta(rightSide, { width: boardT, height: sideH, depth });
+  setPartMeta(rightSide, { width: boardT, height: sideH, depth }, "height");
   g.add(rightSide);
 
   // Interior dims
@@ -70,7 +92,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
   const bottom = new THREE.Mesh(bottomGeo, bodyMat);
   bottom.name = "bottom";
   bottom.position.set(0, plinthH + boardT / 2, interiorCenterZ);
-  setPartMeta(bottom, { width: internalW, height: boardT, depth: internalD });
+  setPartMeta(bottom, { width: internalW, height: boardT, depth: internalD }, "width");
   g.add(bottom);
 
   // Top panel
@@ -78,7 +100,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
   const top = new THREE.Mesh(topGeo, bodyMat);
   top.name = "top";
   top.position.set(0, height - boardT / 2, interiorCenterZ);
-  setPartMeta(top, { width: internalW, height: boardT, depth: internalD });
+  setPartMeta(top, { width: internalW, height: boardT, depth: internalD }, "width");
   g.add(top);
 
   // Back panel
@@ -86,7 +108,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
   const back = new THREE.Mesh(backGeo, bodyMat);
   back.name = "back";
   back.position.set(0, plinthH + sideH / 2, -depth / 2 - backT / 2);
-  setPartMeta(back, { width, height: sideH, depth: backT });
+  setPartMeta(back, { width, height: sideH, depth: backT }, "width");
   g.add(back);
 
   // Legs (cylinders)
@@ -106,7 +128,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
       const leg = new THREE.Mesh(legGeo, legMat);
       leg.name = name;
       leg.position.set(x, legH / 2, z);
-      setPartMetaMm(leg, { width: legRadius * 2 * 1000, height: legH / MM_TO_M, depth: legRadius * 2 * 1000 });
+      setPartMetaMm(leg, { width: legRadius * 2 * 1000, height: legH / MM_TO_M, depth: legRadius * 2 * 1000 }, "none");
       g.add(leg);
     };
 
@@ -122,7 +144,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
   const kick = new THREE.Mesh(kickGeo, bodyMat);
   kick.name = "kick";
   kick.position.set(0, plinthH / 2, depth / 2 - kickDepth / 2);
-  setPartMeta(kick, { width, height: plinthH, depth: kickDepth });
+  setPartMeta(kick, { width, height: plinthH, depth: kickDepth }, "width");
   g.add(kick);
 
   // Front doors (simple overlay) + hidden hinges
@@ -157,7 +179,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
         door.name = doorName;
         // Door extends inward from hinge pivot toward the center.
         door.position.set(hingeSide === "left" ? doorW / 2 : -doorW / 2, 0, 0);
-        setPartMeta(door, { width: doorW, height: doorH, depth: doorT });
+        setPartMeta(door, { width: doorW, height: doorH, depth: doorT }, "height");
         group.add(door);
 
         // Hidden hinges (boxes) slightly inset + fully on the inside of the door so they're not visible from outside.
@@ -179,7 +201,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
           const hinge = new THREE.Mesh(hingeGeo, hingeMat);
           hinge.name = `${hingePrefix}_${idx + 1}`;
           hinge.position.set(hingeX, y, hingeZ);
-          setPartMeta(hinge, { width: hingeW, height: hingeH, depth: hingeD });
+          setPartMeta(hinge, { width: hingeW, height: hingeH, depth: hingeD }, "none");
           group.add(hinge);
         });
 
@@ -198,7 +220,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
       const door = new THREE.Mesh(doorGeo, frontMat);
       door.name = "door";
       door.position.set(doorW / 2, 0, 0);
-      setPartMeta(door, { width: doorW, height: doorH, depth: doorT });
+      setPartMeta(door, { width: doorW, height: doorH, depth: doorT }, "height");
       group.add(door);
 
       const hingeW = 0.008;
@@ -218,7 +240,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
         const hinge = new THREE.Mesh(hingeGeo, hingeMat);
         hinge.name = `hinge_${idx + 1}`;
         hinge.position.set(hingeX, y, hingeZ);
-        setPartMeta(hinge, { width: hingeW, height: hingeH, depth: hingeD });
+        setPartMeta(hinge, { width: hingeW, height: hingeH, depth: hingeD }, "none");
         group.add(hinge);
       });
 
@@ -241,7 +263,7 @@ export function buildShelves(p: ShelvesParams): THREE.Group {
     const shelf = new THREE.Mesh(shelfGeo, bodyMat);
     shelf.name = `shelf_${i + 1}`;
     shelf.position.set(0, y, interiorCenterZ);
-    setPartMeta(shelf, { width: internalW, height: shelfT, depth: internalD });
+    setPartMeta(shelf, { width: internalW, height: shelfT, depth: internalD }, "width");
     g.add(shelf);
   }
 

@@ -4,10 +4,13 @@ export type PartDimensionsMm = {
   depth: number;
 };
 
+export type GrainAlong = "width" | "height" | "depth" | "none";
+
 export type PartRow = {
   name: string;
   visible: boolean;
   dimensionsMm: PartDimensionsMm;
+  grainAlong: GrainAlong;
 };
 
 export type OverlapRow = {
@@ -85,7 +88,7 @@ export function createPartPanel(container: HTMLElement, args: CreatePartPanelArg
 
     selectedNameEl.textContent = row.name;
     selectedNameEl.classList.remove("muted");
-    selectedDimsEl.textContent = formatDims(row.dimensionsMm);
+    selectedDimsEl.textContent = formatDims(row.dimensionsMm, row.grainAlong);
     selectedBtn.disabled = false;
     selectedBtn.textContent = row.visible ? "Hide selected" : "Show selected";
   };
@@ -116,7 +119,7 @@ export function createPartPanel(container: HTMLElement, args: CreatePartPanelArg
       const dims = document.createElement("div");
       dims.className = "muted";
       dims.style.fontSize = "12px";
-      dims.textContent = formatDims(row.dimensionsMm);
+      dims.textContent = formatDims(row.dimensionsMm, row.grainAlong);
 
       rowWrap.appendChild(label);
       rowWrap.appendChild(dims);
@@ -203,11 +206,13 @@ export function createPartPanel(container: HTMLElement, args: CreatePartPanelArg
   return api;
 }
 
-function formatDims(d: PartDimensionsMm) {
+function formatDims(d: PartDimensionsMm, grainAlong: GrainAlong) {
   const w = round1(d.width);
   const h = round1(d.height);
   const dep = round1(d.depth);
-  return `${w}×${h}×${dep} mm`;
+  const base = `${w}×${h}×${dep} mm`;
+  if (grainAlong === "none") return `${base} • grain: -`;
+  return `${base} • grain: ${grainAlong}`;
 }
 
 function round1(n: number) {

@@ -29,6 +29,9 @@ export function createCornerShelfLowerControls(
     key: "materials.bodyColor" | "materials.frontColor" | "materials.drawerColor";
     input: HTMLInputElement;
   }> = [];
+  let bodyTextureRotation: HTMLSelectElement | null = null;
+  let bodyTintColor: HTMLInputElement | null = null;
+  let bodyTintStrength: HTMLInputElement | null = null;
 
   const addNumber = (
     key: keyof CornerShelfLowerParams,
@@ -218,6 +221,77 @@ export function createCornerShelfLowerControls(
   addColor("materials.frontColor", "Fronts color");
   addColor("materials.drawerColor", "Drawer color");
 
+  // Body texture rotation
+  {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+
+    const lab = document.createElement("label");
+    lab.textContent = "Body texture rotation";
+    lab.htmlFor = "f_bodyTextureRotation";
+
+    const sel = document.createElement("select");
+    sel.id = "f_bodyTextureRotation";
+    sel.innerHTML = `
+      <option value="0">0°</option>
+      <option value="90">90°</option>
+      <option value="180">180°</option>
+      <option value="270">270°</option>
+    `;
+
+    wrap.appendChild(lab);
+    wrap.appendChild(sel);
+    grid.appendChild(wrap);
+
+    bodyTextureRotation = sel;
+  }
+
+  // Body tint
+  {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+
+    const lab = document.createElement("label");
+    lab.textContent = "Body wood tint";
+    lab.htmlFor = "f_bodyTintColor";
+
+    const input = document.createElement("input");
+    input.id = "f_bodyTintColor";
+    input.type = "color";
+    input.style.width = "120px";
+    input.style.height = "36px";
+    input.style.padding = "0";
+    input.style.borderRadius = "10px";
+
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    grid.appendChild(wrap);
+
+    bodyTintColor = input;
+  }
+
+  {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+
+    const lab = document.createElement("label");
+    lab.textContent = "Body tint strength";
+    lab.htmlFor = "f_bodyTintStrength";
+
+    const input = document.createElement("input");
+    input.id = "f_bodyTintStrength";
+    input.type = "range";
+    input.min = "0";
+    input.max = "100";
+    input.step = "1";
+
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    grid.appendChild(wrap);
+
+    bodyTintStrength = input;
+  }
+
   const syncFromParams = () => {
     for (const f of numberFields) {
       const value = params[f.key];
@@ -225,6 +299,9 @@ export function createCornerShelfLowerControls(
     }
     for (const f of keyFields) f.input.value = getMaterialKey(params, f.key);
     for (const f of colorFields) f.input.value = getMaterialColor(params, f.key);
+    if (bodyTextureRotation) bodyTextureRotation.value = String(params.materials.bodyPbr?.rotationDeg ?? 0);
+    if (bodyTintColor) bodyTintColor.value = params.materials.bodyPbr?.tintColor ?? "#ffffff";
+    if (bodyTintStrength) bodyTintStrength.value = String(Math.round((params.materials.bodyPbr?.tintStrength ?? 0) * 100));
 
     doorDouble.checked = params.doorDouble === true;
     doorOpen.checked = params.doorOpen === true;
@@ -254,6 +331,15 @@ export function createCornerShelfLowerControls(
 
     for (const f of keyFields) setMaterialKey(params, f.key, f.input.value);
     for (const f of colorFields) setMaterialColor(params, f.key, f.input.value);
+    if (bodyTextureRotation) {
+      if (!params.materials.bodyPbr) params.materials.bodyPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
+      params.materials.bodyPbr.rotationDeg = (Number(bodyTextureRotation.value) as 0 | 90 | 180 | 270) ?? 0;
+    }
+    if (bodyTintColor || bodyTintStrength) {
+      if (!params.materials.bodyPbr) params.materials.bodyPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
+      if (bodyTintColor) params.materials.bodyPbr.tintColor = bodyTintColor.value;
+      if (bodyTintStrength) params.materials.bodyPbr.tintStrength = Number(bodyTintStrength.value) / 100;
+    }
 
     if (autoFit.checked) {
       params.shelfGaps = computeEqualShelfGaps(params);
@@ -274,6 +360,9 @@ export function createCornerShelfLowerControls(
   for (const f of numberFields) f.input.addEventListener("input", onInputsChanged);
   for (const f of keyFields) f.input.addEventListener("input", onInputsChanged);
   for (const f of colorFields) f.input.addEventListener("input", onInputsChanged);
+  bodyTextureRotation?.addEventListener("change", onInputsChanged);
+  bodyTintColor?.addEventListener("input", onInputsChanged);
+  bodyTintStrength?.addEventListener("input", onInputsChanged);
 
   gaps.addEventListener("input", () => {
     if (autoFit.checked) {

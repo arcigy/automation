@@ -1,5 +1,7 @@
 import * as THREE from "three";
 import type { DrawerLowParams } from "../model/cabinetTypes";
+import { getPbrMaterialWorldSizeM, getPbrWoodMaterial } from "../materials/pbrMaterials";
+import { applyBoxGrainUv } from "../materials/uvGrain";
 
 const MM_TO_M = 0.001;
 
@@ -19,11 +21,13 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
   const bottomGap = p.bottomGap * MM_TO_M;
   const drawerBoxT = p.drawerBoxThickness * MM_TO_M;
 
-  const bodyMat = new THREE.MeshStandardMaterial({
-    color: parseHexColor(p.materials.bodyColor),
-    roughness: 0.85,
-    metalness: 0.0
-  });
+  const bodyMat = p.materials.bodyPbr
+    ? getPbrWoodMaterial({ fallbackColor: p.materials.bodyColor, ref: p.materials.bodyPbr })
+    : new THREE.MeshStandardMaterial({
+        color: parseHexColor(p.materials.bodyColor),
+        roughness: 0.85,
+        metalness: 0.0
+      });
   const frontMat = new THREE.MeshStandardMaterial({
     color: parseHexColor(p.materials.frontColor),
     roughness: 0.65,
@@ -36,18 +40,36 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
   });
   const railMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4b, roughness: 0.55, metalness: 0.1 });
 
-  const setPartMeta = (mesh: THREE.Mesh, dimsM: { width: number; height: number; depth: number }) => {
+  const setPartMeta = (
+    mesh: THREE.Mesh,
+    dimsM: { width: number; height: number; depth: number },
+    grainAlong: "width" | "height" | "depth" | "none" = "none"
+  ) => {
     mesh.userData.selectable = true;
     mesh.userData.dimensionsMm = {
       width: dimsM.width / MM_TO_M,
       height: dimsM.height / MM_TO_M,
       depth: dimsM.depth / MM_TO_M
     };
+    mesh.userData.grainAlong = grainAlong;
+    if (p.materials.bodyPbr) {
+      applyBoxGrainUv(
+        mesh.geometry as THREE.BufferGeometry,
+        { x: dimsM.width, y: dimsM.height, z: dimsM.depth },
+        grainAlong,
+        { texScaleM: getPbrMaterialWorldSizeM(p.materials.bodyPbr.id) }
+      );
+    }
   };
 
-  const setPartMetaMm = (mesh: THREE.Mesh, dimsMm: { width: number; height: number; depth: number }) => {
+  const setPartMetaMm = (
+    mesh: THREE.Mesh,
+    dimsMm: { width: number; height: number; depth: number },
+    grainAlong: "width" | "height" | "depth" | "none" = "none"
+  ) => {
     mesh.userData.selectable = true;
     mesh.userData.dimensionsMm = { ...dimsMm };
+    mesh.userData.grainAlong = grainAlong;
   };
 
   // Coordinate system:
@@ -63,13 +85,13 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
   const leftSide = new THREE.Mesh(sideGeo, bodyMat);
   leftSide.position.set(-(width / 2 - boardT / 2), plinthH + sideH / 2, 0);
   leftSide.name = "leftSide";
-  setPartMeta(leftSide, { width: boardT, height: sideH, depth });
+  setPartMeta(leftSide, { width: boardT, height: sideH, depth }, "height");
   g.add(leftSide);
 
   const rightSide = new THREE.Mesh(sideGeo, bodyMat);
   rightSide.position.set(width / 2 - boardT / 2, plinthH + sideH / 2, 0);
   rightSide.name = "rightSide";
-  setPartMeta(rightSide, { width: boardT, height: sideH, depth });
+  setPartMeta(rightSide, { width: boardT, height: sideH, depth }, "height");
   g.add(rightSide);
 
   // Interior dimensions (simplified):
@@ -83,7 +105,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
   const bottom = new THREE.Mesh(bottomGeo, bodyMat);
   bottom.position.set(0, plinthH + boardT / 2, interiorCenterZ);
   bottom.name = "bottom";
-  setPartMeta(bottom, { width: internalW, height: boardT, depth: internalD });
+  setPartMeta(bottom, { width: internalW, height: boardT, depth: internalD }, "width");
   g.add(bottom);
 
   // Top panel (full, simplified)
@@ -91,7 +113,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
   const top = new THREE.Mesh(topGeo, bodyMat);
   top.position.set(0, height - boardT / 2, interiorCenterZ);
   top.name = "top";
-  setPartMeta(top, { width: internalW, height: boardT, depth: internalD });
+  setPartMeta(top, { width: internalW, height: boardT, depth: internalD }, "width");
   g.add(top);
 
   // Back panel (full width), mounted outside so it doesn't overlap the interior volume.
@@ -99,7 +121,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
   const back = new THREE.Mesh(backGeo, bodyMat);
   back.position.set(0, plinthH + sideH / 2, -depth / 2 - backT / 2);
   back.name = "back";
-  setPartMeta(back, { width, height: sideH, depth: backT });
+  setPartMeta(back, { width, height: sideH, depth: backT }, "width");
   g.add(back);
 
   // Legs (cylinders) - 4x, under the carcass, height = plinthHeight
@@ -119,7 +141,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
       const leg = new THREE.Mesh(legGeo, legMat);
       leg.name = name;
       leg.position.set(x, legH / 2, z);
-      setPartMetaMm(leg, { width: legRadius * 2 * 1000, height: legH / MM_TO_M, depth: legRadius * 2 * 1000 });
+      setPartMetaMm(leg, { width: legRadius * 2 * 1000, height: legH / MM_TO_M, depth: legRadius * 2 * 1000 }, "none");
       g.add(leg);
     };
 
@@ -135,7 +157,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
   const kick = new THREE.Mesh(kickGeo, bodyMat);
   kick.position.set(0, plinthH / 2, depth / 2 - kickDepth / 2);
   kick.name = "kick";
-  setPartMeta(kick, { width, height: plinthH, depth: kickDepth });
+  setPartMeta(kick, { width, height: plinthH, depth: kickDepth }, "width");
   g.add(kick);
 
   // Drawer fronts (overlay across side panels)
@@ -153,7 +175,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
     const front = new THREE.Mesh(frontGeo, frontMat);
     front.position.set(0, cursorY + h / 2, frontPlaneZ);
     front.name = `front_${i + 1}`;
-    setPartMeta(front, { width: frontW, height: h, depth: frontThickness });
+    setPartMeta(front, { width: frontW, height: h, depth: frontThickness }, "height");
     g.add(front);
 
     // Drawer box (panels)
@@ -190,7 +212,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
     const leftSide2 = new THREE.Mesh(leftSideGeo2, drawerMat);
     leftSide2.name = `drawer_${i + 1}_sideL`;
     leftSide2.position.set(drawerCenter.x - drawerOuterW / 2 + drawerBoxT / 2, sideCenterY, drawerCenter.z);
-    setPartMeta(leftSide2, { width: drawerBoxT, height: sideH, depth: drawerOuterD });
+    setPartMeta(leftSide2, { width: drawerBoxT, height: sideH, depth: drawerOuterD }, "depth");
     g.add(leftSide2);
 
     // Right side
@@ -198,7 +220,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
     const rightSide2 = new THREE.Mesh(rightSideGeo2, drawerMat);
     rightSide2.name = `drawer_${i + 1}_sideR`;
     rightSide2.position.set(drawerCenter.x + drawerOuterW / 2 - drawerBoxT / 2, sideCenterY, drawerCenter.z);
-    setPartMeta(rightSide2, { width: drawerBoxT, height: sideH, depth: drawerOuterD });
+    setPartMeta(rightSide2, { width: drawerBoxT, height: sideH, depth: drawerOuterD }, "depth");
     g.add(rightSide2);
 
     // Bottom
@@ -206,7 +228,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
     const bottom2 = new THREE.Mesh(bottomGeo2, drawerMat);
     bottom2.name = `drawer_${i + 1}_bottom`;
     bottom2.position.set(drawerCenter.x, drawerCenter.y - drawerOuterH / 2 + drawerBoxT / 2, drawerCenter.z + drawerBoxT / 2);
-    setPartMeta(bottom2, { width: innerW, height: drawerBoxT, depth: innerD });
+    setPartMeta(bottom2, { width: innerW, height: drawerBoxT, depth: innerD }, "depth");
     g.add(bottom2);
 
     // Back
@@ -214,7 +236,7 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
     const back2 = new THREE.Mesh(backGeo2, drawerMat);
     back2.name = `drawer_${i + 1}_back`;
     back2.position.set(drawerCenter.x, sideCenterY, drawerCenter.z - drawerOuterD / 2 + drawerBoxT / 2);
-    setPartMeta(back2, { width: innerW, height: sideH, depth: drawerBoxT });
+    setPartMeta(back2, { width: innerW, height: sideH, depth: drawerBoxT }, "width");
     g.add(back2);
 
     // Rails (carcass-mounted)
@@ -228,13 +250,13 @@ export function buildDrawerLow(p: DrawerLowParams): THREE.Group {
     const railL = new THREE.Mesh(railGeo, railMat);
     railL.name = `drawer_${i + 1}_railL`;
     railL.position.set(-internalW / 2 + railT / 2 + railInsetX, railCenterY, railCenterZ);
-    setPartMeta(railL, { width: railT, height: railH, depth: railLen });
+    setPartMeta(railL, { width: railT, height: railH, depth: railLen }, "none");
     g.add(railL);
 
     const railR = new THREE.Mesh(railGeo, railMat);
     railR.name = `drawer_${i + 1}_railR`;
     railR.position.set(internalW / 2 - railT / 2 - railInsetX, railCenterY, railCenterZ);
-    setPartMeta(railR, { width: railT, height: railH, depth: railLen });
+    setPartMeta(railR, { width: railT, height: railH, depth: railLen }, "none");
     g.add(railR);
 
     cursorY += h + frontGap;

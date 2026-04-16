@@ -5,6 +5,24 @@ export type MaterialParams = {
   bodyColor: string; // "#RRGGBB"
   frontColor: string; // "#RRGGBB"
   drawerColor: string; // "#RRGGBB"
+  bodyPbr?: {
+    id: "wood_veneer_oak_7760_1k";
+    rotationDeg?: 0 | 90 | 180 | 270;
+    tintColor?: string;
+    tintStrength?: number;
+  };
+  frontPbr?: {
+    id: "wood_veneer_oak_7760_1k";
+    rotationDeg?: 0 | 90 | 180 | 270;
+    tintColor?: string;
+    tintStrength?: number;
+  };
+  drawerPbr?: {
+    id: "wood_veneer_oak_7760_1k";
+    rotationDeg?: 0 | 90 | 180 | 270;
+    tintColor?: string;
+    tintStrength?: number;
+  };
 };
 
 type ShelfLayoutParams = {
@@ -98,7 +116,8 @@ export function makeDefaultDrawerLowParams(): DrawerLowParams {
       drawerKey: "drawer_default",
       bodyColor: "#b8bcc7",
       frontColor: "#3a7bd5",
-      drawerColor: "#e1a45a"
+      drawerColor: "#e1a45a",
+      bodyPbr: { id: "wood_veneer_oak_7760_1k", rotationDeg: 0, tintStrength: 0 }
     }
   };
   base.drawerFrontHeights = computeEqualDrawerFrontHeights(base);
@@ -127,7 +146,8 @@ export function makeDefaultShelvesParams(): ShelvesParams {
       drawerKey: "drawer_unused",
       bodyColor: "#b8bcc7",
       frontColor: "#3a7bd5",
-      drawerColor: "#e1a45a"
+      drawerColor: "#e1a45a",
+      bodyPbr: { id: "wood_veneer_oak_7760_1k", rotationDeg: 0, tintStrength: 0 }
     }
   };
   base.shelfGaps = computeEqualShelfGaps(base);
@@ -157,7 +177,8 @@ export function makeDefaultCornerShelfLowerParams(): CornerShelfLowerParams {
       drawerKey: "drawer_unused",
       bodyColor: "#b8bcc7",
       frontColor: "#3a7bd5",
-      drawerColor: "#e1a45a"
+      drawerColor: "#e1a45a",
+      bodyPbr: { id: "wood_veneer_oak_7760_1k", rotationDeg: 0, tintStrength: 0 }
     }
   };
   base.shelfGaps = computeEqualShelfGaps(base);

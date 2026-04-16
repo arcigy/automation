@@ -9,7 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "three": "^0.165.0"
+    "postprocessing": "^6.39.0",
+    "realism-effects": "^1.1.2",
+    "three": "^0.168.0",
+    "three-gpu-pathtracer": "0.0.20",
+    "three-mesh-bvh": "^0.9.9"
   },
   "devDependencies": {
     "typescript": "^5.5.4",
