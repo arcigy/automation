@@ -1,5 +1,7 @@
 import { defineConfig, type ViteDevServer } from "vite";
-import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import { runBlenderExport } from "./src/server/blender/runBlenderExport";
 
 const readJsonBody = async (req: any) => {
@@ -13,6 +15,31 @@ const sendJson = (res: any, status: number, data: unknown) => {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(data));
+};
+
+const exportsFileMiddleware = (server: ViteDevServer) => {
+  return async (req: any, res: any, next: any) => {
+    try {
+      if (req.method !== "GET" || !req.url?.startsWith("/exports/")) return next();
+      const rel = req.url.slice("/exports/".length).split("?")[0] || "";
+      const safeRel = rel.replaceAll("\\", "/");
+      if (safeRel.includes("..")) {
+        res.statusCode = 400;
+        res.end("Bad path");
+        return;
+      }
+
+      const filePath = path.join(server.config.root, "exports", safeRel);
+      const st = await stat(filePath);
+      if (!st.isFile()) return next();
+
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Content-Type", safeRel.toLowerCase().endsWith(".png") ? "image/png" : "application/octet-stream");
+      createReadStream(filePath).pipe(res);
+    } catch {
+      return next();
+    }
+  };
 };
 
 const blenderExportMiddleware = (server: ViteDevServer) => {
@@ -32,18 +59,14 @@ const blenderExportMiddleware = (server: ViteDevServer) => {
         previewOutPath: wantPreview ? "exports/preview.png" : null
       });
 
-      let previewDataUrl: string | null = null;
-      if (result.previewPath) {
-        const buf = await readFile(result.previewPath);
-        previewDataUrl = `data:image/png;base64,${buf.toString("base64")}`;
-      }
+      const previewUrl = result.previewPath ? `/exports/${path.basename(result.previewPath)}?t=${Date.now()}` : null;
 
       sendJson(res, 200, {
         ok: true,
         jsonPath: result.jsonPath,
         blendPath: result.blendPath,
         previewPath: result.previewPath,
-        previewDataUrl
+        previewUrl
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -59,6 +82,7 @@ export default defineConfig({
       name: "blender-export-dev-endpoint",
       apply: "serve",
       configureServer(server) {
+        server.middlewares.use(exportsFileMiddleware(server));
         server.middlewares.use(blenderExportMiddleware(server));
       }
     }

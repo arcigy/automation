@@ -64,9 +64,8 @@ export BLENDER_PATH="/Applications/Blender.app/Contents/MacOS/Blender"
 
 - Run the app: `npm run dev`
 - Click `Export scene JSON (Blender)` in the sidebar:
-  - always exports an immediate PNG from the current Three.js viewport (`preview.three.png` download)
-  - tries to run Blender locally (headless) and shows a preview render directly in the sidebar
-  - on failure it falls back to downloading `scene.blender.v1.json`
+  - runs Blender locally (headless) and shows a preview render directly in the sidebar
+  - Blender is required (set `BLENDER_PATH` or add `blender` to `PATH`)
 
 ### 2) Convert JSON → .blend (and optional preview render)
 

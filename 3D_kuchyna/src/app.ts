@@ -1536,23 +1536,6 @@ export function startApp(args: AppArgs) {
     }
   });
 
-  const downloadJson = (json: string, filename: string) => {
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const downloadDataUrl = (dataUrl: string, filename: string) => {
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = filename;
-    a.click();
-  };
-
   args.exportSceneBtn.addEventListener("click", async () => {
     args.copyStatusEl.textContent = "";
 
@@ -1570,16 +1553,6 @@ export function startApp(args: AppArgs) {
 
     const json = JSON.stringify(payload, null, 2);
     args.exportOutEl.value = json;
-
-    // Always produce an immediate preview image from the current Three.js viewport (no Blender needed).
-    try {
-      const previewImg = document.getElementById("blenderPreview") as HTMLImageElement | null;
-      const dataUrl = renderer.domElement.toDataURL("image/png");
-      if (previewImg) previewImg.src = dataUrl;
-      downloadDataUrl(dataUrl, "preview.three.png");
-    } catch {
-      // ignore
-    }
 
     const tryCopy = async () => {
       try {
@@ -1602,15 +1575,13 @@ export function startApp(args: AppArgs) {
 
       const copyOk = await tryCopy();
       const previewImg = document.getElementById("blenderPreview") as HTMLImageElement | null;
-      if (previewImg && typeof data.previewDataUrl === "string") previewImg.src = `${data.previewDataUrl}`;
+      if (previewImg && typeof data.previewUrl === "string") previewImg.src = `${data.previewUrl}`;
 
-      args.copyStatusEl.textContent = `Done. ${copyOk ? "Copied." : "Copy failed."} blend: ${data.blendPath}`;
+      args.copyStatusEl.textContent = `Done. ${copyOk ? "Copied." : "Copy failed."}`;
       return;
     } catch (e: unknown) {
-      const copyOk = await tryCopy();
       const msg = e instanceof Error ? e.message : String(e);
-      args.copyStatusEl.textContent = `Blender export skipped/failed (${msg}). ${copyOk ? "Copied." : "Copy failed."} Downloading JSON.`;
-      downloadJson(json, "scene.blender.v1.json");
+      args.copyStatusEl.textContent = `Blender export failed: ${msg}`;
     }
   });
 
