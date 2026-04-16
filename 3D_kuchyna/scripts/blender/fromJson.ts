@@ -45,7 +45,7 @@ async function main() {
   const projectRoot = process.cwd();
   const jsonPath = path.resolve(projectRoot, jsonArg);
   const raw = await readFile(jsonPath, "utf-8");
-  const sceneJson = JSON.parse(raw) as unknown;
+  const sceneJson = JSON.parse(raw.replace(/^\uFEFF/, "")) as unknown;
 
   const blendOutPath = typeof args.blend === "string" ? args.blend : undefined;
   const previewOutPath = typeof args.preview === "string" ? args.preview : null;

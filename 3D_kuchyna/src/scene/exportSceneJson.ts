@@ -11,6 +11,7 @@ export type SceneExportV1 = {
     position: [number, number, number];
     rotation: [number, number, number];
     fov: number;
+    target?: [number, number, number];
   };
   environment: {
     hdriPath: string | null;
@@ -158,6 +159,7 @@ const extractPbr = (material: THREE.Material | null | undefined, tags: string[])
 export type ExportSceneArgs = {
   scene: THREE.Scene;
   camera: THREE.Camera;
+  cameraTarget?: THREE.Vector3;
   environment?: { hdriPath: string | null; hdriStrength?: number };
   lighting?: { sunDirection?: THREE.Vector3; sunStrength?: number; sunAngle?: number };
   includeInvisible?: boolean;
@@ -166,6 +168,7 @@ export type ExportSceneArgs = {
 export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
   const warnings: string[] = [];
 
+  args.camera.updateMatrixWorld(true);
   const cameraWorld = args.camera.matrixWorld.clone();
   const camTRS = decomposeBlenderTRS(cameraWorld);
   const fov =
@@ -275,7 +278,14 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
 
   return {
     meta: { unit: "meters", version: 1, coordinateSystem: "blender_z_up", ...(warnings.length ? { warnings } : {}) },
-    camera: { position: camTRS.position, rotation: camTRS.rotation, fov },
+    camera: {
+      position: camTRS.position,
+      rotation: camTRS.rotation,
+      fov,
+      ...(args.cameraTarget
+        ? { target: threeToBlenderVec3(args.cameraTarget.x, args.cameraTarget.y, args.cameraTarget.z) }
+        : {})
+    },
     environment: { hdriPath: env.hdriPath ?? null, hdriStrength },
     lighting: {
       sunDirection,
@@ -285,4 +295,3 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
     objects
   };
 }
-

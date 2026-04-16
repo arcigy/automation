@@ -90,7 +90,9 @@ def _world_setup(scene, hdri_path, strength):
 
     if not hdri_ok:
         bg.inputs["Color"].default_value = (0.85, 0.85, 0.85, 1.0)
-        bg.inputs["Strength"].default_value = min(bg.inputs["Strength"].default_value, 0.25)
+        # Keep a readable baseline even without HDRI, but don't overpower the SUN.
+        s = float(bg.inputs["Strength"].default_value)
+        bg.inputs["Strength"].default_value = max(0.25, min(0.6, s))
 
 
 def _ensure_material_cache():
@@ -226,6 +228,7 @@ def _mesh_from_spec(name, geo_spec):
 
     mesh = bpy.data.meshes.new(name=name)
     mesh.from_pydata(v, [], faces)
+    mesh.validate(clean_customdata=False)
     mesh.update(calc_edges=True)
 
     if isinstance(uvs, list) and len(uvs) == vcount * 2:
@@ -236,15 +239,11 @@ def _mesh_from_spec(name, geo_spec):
 
     if isinstance(normals, list) and len(normals) == vcount * 3:
         try:
-            mesh.use_auto_smooth = True
-            mesh.calc_normals_split()
             n = [Vector((float(normals[i * 3 + 0]), float(normals[i * 3 + 1]), float(normals[i * 3 + 2]))) for i in range(vcount)]
             mesh.normals_split_custom_set_from_vertices(n)
+            mesh.update()
         except Exception as e:
-            print(f"[warn] Failed to set custom normals on {name}: {e}")
-            mesh.calc_normals()
-    else:
-        mesh.calc_normals()
+            print(f"[warn] Failed to set custom normals on {name} (ignored): {e}")
 
     return mesh
 
@@ -289,6 +288,24 @@ def _add_object(scene, obj_spec, mat_cache):
     return obj
 
 
+def _hide_preview_helpers(scene):
+    hide_prefixes = ("pick_", "outline_", "measure_", "debug_", "helper_")
+    hide_names = {"windowPick"}
+    for obj in list(scene.objects):
+        n = obj.name or ""
+        if n in hide_names or any(n.startswith(p) for p in hide_prefixes):
+            obj.hide_render = True
+
+
+def _open_studio_room(scene):
+    # The Three.js app uses internal "window" lights. In Blender we intentionally keep only SUN + HDRI,
+    # so we open the studio box to let exterior light reach the scene (AI-context preview).
+    for name in ("roomFront", "roomCeiling"):
+        obj = scene.objects.get(name)
+        if obj:
+            obj.hide_render = True
+
+
 def _setup_camera(scene, camera_spec):
     cam_data = bpy.data.cameras.new("Camera")
     cam_obj = bpy.data.objects.new("Camera", cam_data)
@@ -296,10 +313,18 @@ def _setup_camera(scene, camera_spec):
 
     pos = _as_vec3(camera_spec.get("position") if isinstance(camera_spec, dict) else None, (2.0, -2.0, 1.4))
     rot = _as_vec3(camera_spec.get("rotation") if isinstance(camera_spec, dict) else None, (0.9, 0.0, 0.0))
+    target = _as_vec3(camera_spec.get("target") if isinstance(camera_spec, dict) else None, (0.0, 0.0, 0.0))
     fov_deg = float(camera_spec.get("fov")) if isinstance(camera_spec, dict) and isinstance(camera_spec.get("fov"), (int, float)) else 35.0
 
     cam_obj.location = pos
-    cam_obj.rotation_euler = (rot.x, rot.y, rot.z)
+    if isinstance(camera_spec, dict) and camera_spec.get("target") is not None:
+        d = (target - pos)
+        if d.length < 1e-6:
+            cam_obj.rotation_euler = (rot.x, rot.y, rot.z)
+        else:
+            cam_obj.rotation_euler = d.to_track_quat("-Z", "Y").to_euler()
+    else:
+        cam_obj.rotation_euler = (rot.x, rot.y, rot.z)
     try:
         cam_data.angle_y = math.radians(max(1.0, min(179.0, fov_deg)))
     except Exception:
@@ -374,6 +399,9 @@ def main():
             n = o.get("name") if isinstance(o, dict) else "Object"
             print(f"[warn] Skipping object {n}: {e}")
 
+    _hide_preview_helpers(scene)
+    _open_studio_room(scene)
+
     _ensure_dir(blend_out)
     bpy.ops.wm.save_as_mainfile(filepath=os.path.abspath(blend_out))
 
@@ -392,4 +420,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

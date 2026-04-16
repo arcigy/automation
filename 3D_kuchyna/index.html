@@ -54,6 +54,17 @@
             <label class="muted">Blender preview</label>
             <img id="blenderPreview" alt="Blender preview render" style="width:100%; border-radius:8px; background:#111; aspect-ratio:1/1; object-fit:cover;" />
           </div>
+
+          <div class="blender-status">
+            <div class="row">
+              <div class="left">
+                <span id="blenderSpinner" class="spinner" aria-hidden="true"></span>
+                <span id="blenderStatus" class="muted">Idle.</span>
+              </div>
+              <a id="blenderPreviewLink" class="muted" href="#" target="_blank" rel="noreferrer" style="display:none;">Open</a>
+            </div>
+            <pre id="blenderError" class="blender-error" style="display:none;"></pre>
+          </div>
         </div>
       </aside>
     </div>

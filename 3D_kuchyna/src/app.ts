@@ -1538,14 +1538,36 @@ export function startApp(args: AppArgs) {
 
   args.exportSceneBtn.addEventListener("click", async () => {
     args.copyStatusEl.textContent = "";
+    const statusEl = document.getElementById("blenderStatus");
+    const spinnerEl = document.getElementById("blenderSpinner");
+    const errorEl = document.getElementById("blenderError");
+    const previewLinkEl = document.getElementById("blenderPreviewLink") as HTMLAnchorElement | null;
+    const previewImg = document.getElementById("blenderPreview") as HTMLImageElement | null;
+
+    const setUi = (state: "idle" | "running" | "done" | "error", msg: string, detail?: string) => {
+      if (statusEl) statusEl.textContent = msg;
+      if (spinnerEl) spinnerEl.classList.toggle("visible", state === "running");
+      if (errorEl) {
+        if (state === "error" && detail) {
+          errorEl.textContent = detail;
+          (errorEl as HTMLElement).style.display = "block";
+        } else {
+          (errorEl as HTMLElement).style.display = "none";
+          errorEl.textContent = "";
+        }
+      }
+      if (previewLinkEl) previewLinkEl.style.display = state === "done" ? "inline" : "none";
+    };
 
     const hdri = getHdriSettings();
     const opening = getWindowOpening();
     const sunDirection = opening ? opening.inwardNormal.clone().multiplyScalar(-1).normalize() : undefined;
+    const cameraTarget = (ctl() as any)?.target instanceof THREE.Vector3 ? ((ctl() as any).target as THREE.Vector3) : undefined;
 
     const payload = exportSceneToJson({
       scene,
       camera: cam(),
+      cameraTarget,
       environment: { hdriPath: hdri.id, hdriStrength: hdri.envIntensity },
       lighting: { sunDirection, sunStrength: 3.0, sunAngle: 0.8 },
       includeInvisible: false
@@ -1563,25 +1585,48 @@ export function startApp(args: AppArgs) {
       }
     };
 
-    args.copyStatusEl.textContent = "Running Blender…";
+    args.exportSceneBtn.disabled = true;
+    setUi("running", "Running Blender (up to 60s)…");
+    if (previewImg) previewImg.removeAttribute("src");
+
     try {
+      const ctrl = new AbortController();
+      const t = window.setTimeout(() => ctrl.abort(), 65_000);
       const res = await fetch("/api/blender/export", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneJson: payload, preview: true })
+        body: JSON.stringify({ sceneJson: payload }),
+        signal: ctrl.signal
       });
-      const data = (await res.json()) as any;
-      if (!res.ok || !data?.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      window.clearTimeout(t);
+
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // ignore
+      }
+
+      if (!res.ok || !data?.ok) {
+        throw new Error((data && typeof data.error === "string" && data.error) || text || `HTTP ${res.status}`);
+      }
 
       const copyOk = await tryCopy();
-      const previewImg = document.getElementById("blenderPreview") as HTMLImageElement | null;
-      if (previewImg && typeof data.previewUrl === "string") previewImg.src = `${data.previewUrl}`;
+      const previewUrl = typeof data.previewUrl === "string" ? data.previewUrl : null;
+      if (!previewUrl) throw new Error("Backend did not return previewUrl.");
 
-      args.copyStatusEl.textContent = `Done. ${copyOk ? "Copied." : "Copy failed."}`;
-      return;
+      if (previewLinkEl) previewLinkEl.href = previewUrl;
+      if (previewImg) previewImg.src = previewUrl;
+
+      setUi("done", `Done. ${copyOk ? "Copied JSON." : "Copy failed."}`);
+      args.copyStatusEl.textContent = "";
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      args.copyStatusEl.textContent = `Blender export failed: ${msg}`;
+      setUi("error", "Blender export failed.", msg);
+      args.copyStatusEl.textContent = "";
+    } finally {
+      args.exportSceneBtn.disabled = false;
     }
   });
 
