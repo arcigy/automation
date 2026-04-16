@@ -7,7 +7,9 @@
     "dev": "vite --host 127.0.0.1 --port 5180",
     "build": "vite build",
     "preview": "vite preview",
-    "blender:from-json": "tsx scripts/blender/fromJson.ts"
+    "blender:from-json": "tsx scripts/blender/fromJson.ts",
+    "worker:dev": "tsx scripts/worker.ts",
+    "dev:local": "tsx scripts/devLocal.ts"
   },
   "dependencies": {
     "postprocessing": "^6.39.0",

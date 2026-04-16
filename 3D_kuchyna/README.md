@@ -60,9 +60,21 @@ $env:BLENDER_PATH="C:\\Program Files\\Blender Foundation\\Blender 4.2\\blender.e
 export BLENDER_PATH="/Applications/Blender.app/Contents/MacOS/Blender"
 ```
 
-### 1) Export scene JSON from the app
+### Local backend worker (required)
 
-- Run the app: `npm run dev`
+Blender is executed only by a local backend worker (Node/TS), not by the frontend.
+
+Start both the worker and the Vite dev server:
+
+```bash
+npm run dev:local
+```
+
+Worker listens on `http://127.0.0.1:5191` and Vite proxies `/api/*` + `/exports/*` to it.
+
+### 1) Export scene JSON + Blender render from the app
+
+ - Run the app + worker: `npm run dev:local`
 - Click `Export scene JSON (Blender)` in the sidebar:
   - runs Blender locally (headless) and shows a preview render directly in the sidebar
   - Blender is required (set `BLENDER_PATH` or add `blender` to `PATH`)
@@ -98,6 +110,21 @@ Outputs (defaults / recommended):
 - Imports only the first material if a mesh has multiple materials.
 - If normals/UVs are missing in Three.js, Blender will recalc normals and UVs will be skipped.
 - Lighting in Blender is intentionally minimal: `SUN` + optional HDRI world (no extra lights).
+
+## BLENDER_PATH + command details
+
+Where to set `BLENDER_PATH`:
+
+- Windows (PowerShell): `$env:BLENDER_PATH="C:\\Program Files\\Blender Foundation\\Blender 4.x\\blender.exe"`
+- Or set it as a system/user environment variable in Windows settings.
+
+Exact command executed by the backend worker:
+
+```text
+BLENDER_PATH(or blender) --background --python scripts/blender/import_scene.py -- exports/scene.json exports/scene.blend exports/preview.png
+```
+
+If Blender is not found, the backend returns HTTP 500 with a clear error (no fallback).
 
 ## Next recommended step
 
