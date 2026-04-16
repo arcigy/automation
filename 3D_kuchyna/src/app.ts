@@ -1564,14 +1564,39 @@ export function startApp(args: AppArgs) {
     const json = JSON.stringify(payload, null, 2);
     args.exportOutEl.value = json;
 
-    try {
-      await navigator.clipboard.writeText(json);
-      args.copyStatusEl.textContent = "Copied.";
-    } catch {
-      args.copyStatusEl.textContent = "Copy failed (browser permission).";
-    }
+    const tryCopy = async () => {
+      try {
+        await navigator.clipboard.writeText(json);
+        return true;
+      } catch {
+        return false;
+      }
+    };
 
-    downloadJson(json, "scene.blender.v1.json");
+    args.copyStatusEl.textContent = "Running Blender…";
+    try {
+      const res = await fetch("/api/blender/export", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sceneJson: payload, preview: true })
+      });
+      const data = (await res.json()) as any;
+      if (!res.ok || !data?.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+
+      const copyOk = await tryCopy();
+      const previewImg = document.getElementById("blenderPreview") as HTMLImageElement | null;
+      if (previewImg && typeof data.previewDataUrl === "string") {
+        previewImg.src = `${data.previewDataUrl}`;
+      }
+
+      args.copyStatusEl.textContent = `Done. ${copyOk ? "Copied." : "Copy failed."} blend: ${data.blendPath}`;
+      return;
+    } catch (e: unknown) {
+      const copyOk = await tryCopy();
+      const msg = e instanceof Error ? e.message : String(e);
+      args.copyStatusEl.textContent = `Blender export failed (${msg}). ${copyOk ? "Copied." : "Copy failed."} Downloading JSON.`;
+      downloadJson(json, "scene.blender.v1.json");
+    }
   });
 
   args.copyBtn.addEventListener("click", async () => {

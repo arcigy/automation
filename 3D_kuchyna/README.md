@@ -63,8 +63,9 @@ export BLENDER_PATH="/Applications/Blender.app/Contents/MacOS/Blender"
 ### 1) Export scene JSON from the app
 
 - Run the app: `npm run dev`
-- Click `Export scene JSON (Blender)` in the sidebar.
-- It downloads `scene.blender.v1.json` (and also copies it to clipboard + shows it in the Export textarea).
+- Click `Export scene JSON (Blender)` in the sidebar:
+  - tries to run Blender locally (headless) and shows a preview render directly in the sidebar
+  - on failure it falls back to downloading `scene.blender.v1.json`
 
 ### 2) Convert JSON → .blend (and optional preview render)
 
