@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Parametric Drawer Cabinet (MVP)</title>
+  </head>
+  <body>
+    <div id="app">
+      <div id="viewer" aria-label="3D viewer"></div>
+      <aside id="sidebar">
+        <header class="sidebar-header">
+          <h1>Drawer cabinet</h1>
+          <p class="muted">JSON → geometry (Three.js)</p>
+        </header>
+
+        <div id="form"></div>
+
+        <div class="actions">
+          <button id="resetBtn" type="button">Reset to defaults</button>
+          <button id="exportBtn" type="button">Export + copy JSON</button>
+        </div>
+
+        <div id="errors" class="errors" role="alert" aria-live="polite"></div>
+
+        <section class="parts">
+          <h2>Parts</h2>
+          <div id="parts"></div>
+        </section>
+
+        <section class="parts">
+          <h2>Measure</h2>
+          <div class="actions">
+            <button id="measureBtn" type="button">Measure: Off</button>
+            <button id="clearMeasuresBtn" type="button">Clear</button>
+          </div>
+          <div class="field">
+            <label for="axisLock">Axis lock (X/Z)</label>
+            <input id="axisLock" type="checkbox" checked />
+          </div>
+          <p id="measureReadout" class="muted"></p>
+        </section>
+
+        <div class="export">
+          <label for="exportOut" class="muted">Export</label>
+          <textarea id="exportOut" readonly rows="10"></textarea>
+          <div class="actions">
+            <button id="copyBtn" type="button">Copy export</button>
+            <div id="copyStatus" class="muted" style="align-self:center;"></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

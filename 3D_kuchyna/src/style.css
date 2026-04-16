@@ -1,0 +1,264 @@
+:root {
+  --bg: #0b0c10;
+  --panel: #12141a;
+  --border: #242836;
+  --text: #e6e8ee;
+  --muted: #9aa3b2;
+  --danger: #ff6b6b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial,
+    "Apple Color Emoji", "Segoe UI Emoji";
+  color: var(--text);
+  background: var(--bg);
+}
+
+#app {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 1fr 360px;
+}
+
+#viewer {
+  position: relative;
+  min-width: 0;
+}
+
+#sidebar {
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  padding: 14px;
+  overflow: auto;
+}
+
+.sidebar-header h1 {
+  font-size: 16px;
+  margin: 0 0 4px 0;
+}
+
+.muted {
+  color: var(--muted);
+  margin: 0;
+  font-size: 12px;
+}
+
+.grid {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 1fr 120px;
+  align-items: center;
+  gap: 10px;
+}
+
+label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+input,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f1117;
+  color: var(--text);
+}
+
+textarea {
+  resize: vertical;
+  line-height: 1.3;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+button {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #1b2030;
+  color: var(--text);
+  cursor: pointer;
+}
+
+button:hover {
+  background: #232a3e;
+}
+
+.errors {
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #3a1f23;
+  background: #1a0f12;
+  border-radius: 10px;
+  display: none;
+}
+
+.errors.visible {
+  display: block;
+}
+
+.errors ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.errors li {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 2px 0;
+}
+
+.export {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.parts {
+  margin: 12px 0 6px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.parts h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.parts .selected {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: #0f1117;
+  border-radius: 10px;
+  margin-bottom: 10px;
+}
+
+.parts .selected .name {
+  font-size: 12px;
+}
+
+.parts .selected .dims {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.parts .list {
+  display: grid;
+  gap: 6px;
+}
+
+.parts .item {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.parts .item input {
+  width: 16px;
+  height: 16px;
+}
+
+.parts .item .row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.parts .item .label {
+  font-size: 12px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.parts .item button {
+  padding: 6px 10px;
+  border-radius: 10px;
+}
+
+.parts .overlaps {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.parts .overlapsHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.parts .overlapsHint {
+  font-size: 11px;
+}
+
+.parts .overlapsToggle {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+  user-select: none;
+}
+
+.parts .overlapsToggle input {
+  width: 14px;
+  height: 14px;
+}
+
+.parts .overlapItem {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.parts .overlapItem.allowed .overlapText {
+  color: var(--muted);
+}
+
+.parts .overlapText {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
