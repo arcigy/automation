@@ -16,6 +16,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
   const backT = p.backThickness * MM_TO_M;
   const plinthH = p.plinthHeight * MM_TO_M;
   const shelfT = p.shelfThickness * MM_TO_M;
+  const fitEps = 0.0002; // 0.2mm: avoids tiny overlaps from float math
 
   const bodyMat = new THREE.MeshStandardMaterial({
     color: parseHexColor(p.materials.bodyColor),
@@ -71,45 +72,56 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
 
   // Back panels on inner edges
   {
-    const backGeoX = new THREE.BoxGeometry(lenX, openingH, backT);
+    const innerX0 = innerX + backT;
+    const innerX1 = lenX / 2 - boardT;
+    const backXLen = safeDim(innerX1 - innerX0 - fitEps);
+    const backGeoX = new THREE.BoxGeometry(backXLen, openingH, backT);
     const backX = new THREE.Mesh(backGeoX, bodyMat);
     backX.name = "back_x";
-    backX.position.set(0, plinthH + openingH / 2, innerZ + backT / 2);
-    setPartMeta(backX, { width: lenX, height: openingH, depth: backT });
+    backX.position.set(innerX0 + fitEps / 2 + backXLen / 2, plinthH + openingH / 2, innerZ + backT / 2);
+    setPartMeta(backX, { width: backXLen, height: openingH, depth: backT });
     g.add(backX);
 
-    const backGeoZ = new THREE.BoxGeometry(backT, openingH, lenZ);
+    const innerZ0 = innerZ + backT;
+    const innerZ1 = lenZ / 2 - boardT;
+    const backZLen = safeDim(innerZ1 - innerZ0 - fitEps);
+    const backGeoZ = new THREE.BoxGeometry(backT, openingH, backZLen);
     const backZ = new THREE.Mesh(backGeoZ, bodyMat);
     backZ.name = "back_z";
-    backZ.position.set(innerX + backT / 2, plinthH + openingH / 2, 0);
-    setPartMeta(backZ, { width: backT, height: openingH, depth: lenZ });
+    backZ.position.set(innerX + backT / 2, plinthH + openingH / 2, innerZ0 + fitEps / 2 + backZLen / 2);
+    setPartMeta(backZ, { width: backT, height: openingH, depth: backZLen });
     g.add(backZ);
   }
 
-  // Bottom/top panels (L-shape from 2 boxes, second box excludes overlap)
-  const lPartZLen = Math.max(0, lenZ - depth);
-  const lPartXLen = Math.max(0, lenX - depth);
-
+  // Bottom/top panels (L-shape; fit between back + side panels)
   addLPanel("bottom", plinthH + boardT / 2, boardT, bodyMat);
   addLPanel("top", height - boardT / 2, boardT, bodyMat);
 
   function addLPanel(name: string, y: number, t: number, mat: THREE.Material) {
-    // IMPORTANT: top/bottom must stop at the inner face of the back panels (no overlap with back_x/back_z).
-    const insideDepth = safeDim(depth - backT);
-    const geoX = new THREE.BoxGeometry(lenX, t, insideDepth);
+    // IMPORTANT: panels must stop at inner faces (no overlap with back/side panels).
+    const insideDepth = safeDim(depth - backT - fitEps);
+    const runX0 = innerX + backT;
+    const runX1 = lenX / 2 - boardT;
+    const runXLen = safeDim(runX1 - runX0 - fitEps);
+
+    const geoX = new THREE.BoxGeometry(runXLen, t, insideDepth);
     const partX = new THREE.Mesh(geoX, mat);
     partX.name = `${name}_x`;
-    partX.position.set(0, y, innerZ + backT + insideDepth / 2);
-    setPartMeta(partX, { width: lenX, height: t, depth: insideDepth });
+    partX.position.set(runX0 + fitEps / 2 + runXLen / 2, y, innerZ + backT + fitEps / 2 + insideDepth / 2);
+    setPartMeta(partX, { width: runXLen, height: t, depth: insideDepth });
     g.add(partX);
 
-    if (lPartZLen <= 0.0001) return;
-    const insideWidth = safeDim(depth - backT);
-    const geoZ = new THREE.BoxGeometry(insideWidth, t, lPartZLen);
+    const runZ0 = innerZ + depth;
+    const runZ1 = lenZ / 2 - boardT;
+    const runZLen = runZ1 - runZ0 - fitEps;
+    if (runZLen <= 0.0001) return;
+
+    const insideWidth = safeDim(depth - backT - fitEps);
+    const geoZ = new THREE.BoxGeometry(insideWidth, t, runZLen);
     const partZ = new THREE.Mesh(geoZ, mat);
     partZ.name = `${name}_z`;
-    partZ.position.set(innerX + backT + insideWidth / 2, y, innerZ + depth + lPartZLen / 2);
-    setPartMeta(partZ, { width: insideWidth, height: t, depth: lPartZLen });
+    partZ.position.set(innerX + backT + fitEps / 2 + insideWidth / 2, y, runZ0 + fitEps / 2 + runZLen / 2);
+    setPartMeta(partZ, { width: insideWidth, height: t, depth: runZLen });
     g.add(partZ);
   }
 
@@ -163,21 +175,27 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
       g.add(kickCornerZ);
     }
 
-    if (outerXLen > 0.0001) {
-      const kickGeoX = new THREE.BoxGeometry(outerXLen, plinthH, kickDepth);
+    const kickX0 = innerX + depth + cornerW;
+    const kickX1 = lenX / 2 - boardT;
+    const kickXLen = kickX1 - kickX0 - fitEps;
+    if (kickXLen > 0.0001) {
+      const kickGeoX = new THREE.BoxGeometry(kickXLen, plinthH, kickDepth);
       const kickX = new THREE.Mesh(kickGeoX, bodyMat);
       kickX.name = "kick_x";
-      kickX.position.set(innerX + depth + outerXLen / 2, plinthH / 2, innerZ + depth - kickDepth / 2);
-      setPartMeta(kickX, { width: outerXLen, height: plinthH, depth: kickDepth });
+      kickX.position.set(kickX0 + fitEps / 2 + kickXLen / 2, plinthH / 2, innerZ + depth - kickDepth / 2);
+      setPartMeta(kickX, { width: kickXLen, height: plinthH, depth: kickDepth });
       g.add(kickX);
     }
 
-    if (outerZLen > 0.0001) {
-      const kickGeoZ = new THREE.BoxGeometry(kickDepth, plinthH, outerZLen);
+    const kickZ0 = innerZ + depth + cornerW;
+    const kickZ1 = lenZ / 2 - boardT;
+    const kickZLen = kickZ1 - kickZ0 - fitEps;
+    if (kickZLen > 0.0001) {
+      const kickGeoZ = new THREE.BoxGeometry(kickDepth, plinthH, kickZLen);
       const kickZ = new THREE.Mesh(kickGeoZ, bodyMat);
       kickZ.name = "kick_z";
-      kickZ.position.set(innerX + depth - kickDepth / 2, plinthH / 2, innerZ + depth + outerZLen / 2);
-      setPartMeta(kickZ, { width: kickDepth, height: plinthH, depth: outerZLen });
+      kickZ.position.set(innerX + depth - kickDepth / 2, plinthH / 2, kickZ0 + fitEps / 2 + kickZLen / 2);
+      setPartMeta(kickZ, { width: kickDepth, height: plinthH, depth: kickZLen });
       g.add(kickZ);
     }
   }
