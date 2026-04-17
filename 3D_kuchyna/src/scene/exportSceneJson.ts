@@ -8,9 +8,13 @@ export type SceneExportV1 = {
     warnings?: string[];
   };
   camera: {
+    type: "perspective" | "orthographic";
     position: [number, number, number];
     rotation: [number, number, number];
-    fov: number;
+    fov?: number;
+    orthoScale?: number;
+    near?: number;
+    far?: number;
     target?: [number, number, number];
   };
   environment: {
@@ -46,6 +50,14 @@ export type SceneExportV1 = {
       ior: number;
       emissive: [number, number, number];
       emissiveStrength?: number;
+      textures?: {
+        baseColor?: { uri: string; repeat?: [number, number]; rotationDeg?: number; offset?: [number, number] };
+        normal?: { uri: string; repeat?: [number, number]; rotationDeg?: number; offset?: [number, number]; scale?: number };
+        roughness?: { uri: string; repeat?: [number, number]; rotationDeg?: number; offset?: [number, number] };
+        metallic?: { uri: string; repeat?: [number, number]; rotationDeg?: number; offset?: [number, number] };
+        emissive?: { uri: string; repeat?: [number, number]; rotationDeg?: number; offset?: [number, number] };
+      };
+      envMapIntensity?: number;
     };
     shadow: {
       cast: boolean;
@@ -85,12 +97,43 @@ const decomposeBlenderTRS = (worldMatrixThree: THREE.Matrix4) => {
 
 const threeToBlenderVec3 = (x: number, y: number, z: number) => [x, -z, y] as [number, number, number];
 
+const texToSpec = (tex: THREE.Texture | null | undefined) => {
+  if (!tex) return null;
+
+  const img: any = (tex as any).image;
+  const uri =
+    typeof img?.currentSrc === "string" && img.currentSrc.trim().length > 0
+      ? img.currentSrc
+      : typeof img?.src === "string" && img.src.trim().length > 0
+        ? img.src
+        : null;
+  if (!uri) return null;
+
+  const repeat =
+    tex.repeat && Number.isFinite(tex.repeat.x) && Number.isFinite(tex.repeat.y)
+      ? ([tex.repeat.x, tex.repeat.y] as [number, number])
+      : undefined;
+  const offset =
+    tex.offset && Number.isFinite(tex.offset.x) && Number.isFinite(tex.offset.y)
+      ? ([tex.offset.x, tex.offset.y] as [number, number])
+      : undefined;
+  const rotationDeg = Number.isFinite(tex.rotation) ? (tex.rotation * 180) / Math.PI : undefined;
+
+  return {
+    uri,
+    ...(repeat ? { repeat } : {}),
+    ...(offset ? { offset } : {}),
+    ...(rotationDeg !== undefined && Math.abs(rotationDeg) > 1e-6 ? { rotationDeg } : {})
+  };
+};
+
 const inferTags = (name: string, userTags: unknown): string[] => {
   const tags: string[] = [];
   if (Array.isArray(userTags)) {
     for (const t of userTags) if (typeof t === "string" && t.trim()) tags.push(t.trim());
   }
   const n = name.toLowerCase();
+  if (n.startsWith("room")) tags.push("room");
   if (n.includes("floor")) tags.push("floor");
   if (n.includes("wall") || n.includes("back") || n.includes("left") || n.includes("right") || n.includes("ceiling")) tags.push("wall");
   if (n.includes("wood")) tags.push("wood");
@@ -116,6 +159,16 @@ const extractPbr = (material: THREE.Material | null | undefined, tags: string[])
   const m = material as any;
   const color = m.color instanceof THREE.Color ? m.color : null;
   const emissive = m.emissive instanceof THREE.Color ? m.emissive : null;
+
+  const baseColorTex = texToSpec(m.map as THREE.Texture | undefined);
+  const normalTex = texToSpec(m.normalMap as THREE.Texture | undefined);
+  const roughnessTex = texToSpec(m.roughnessMap as THREE.Texture | undefined);
+  const metallicTex = texToSpec(m.metalnessMap as THREE.Texture | undefined);
+  const emissiveTex = texToSpec(m.emissiveMap as THREE.Texture | undefined);
+  const normalScale =
+    m.normalScale instanceof THREE.Vector2 && Number.isFinite(m.normalScale.x) && Number.isFinite(m.normalScale.y)
+      ? (Math.abs(m.normalScale.x) + Math.abs(m.normalScale.y)) / 2
+      : undefined;
 
   let roughness = toFiniteNumber(m.roughness, fallback.roughness);
   let metallic = toFiniteNumber(m.metalness, fallback.metallic);
@@ -144,6 +197,18 @@ const extractPbr = (material: THREE.Material | null | undefined, tags: string[])
     metallic = 0;
   }
 
+  const textures =
+    baseColorTex || normalTex || roughnessTex || metallicTex || emissiveTex
+      ? {
+          ...(baseColorTex ? { baseColor: baseColorTex } : {}),
+          ...(normalTex ? { normal: { ...normalTex, ...(Number.isFinite(normalScale) ? { scale: normalScale } : {}) } } : {}),
+          ...(roughnessTex ? { roughness: roughnessTex } : {}),
+          ...(metallicTex ? { metallic: metallicTex } : {}),
+          ...(emissiveTex ? { emissive: emissiveTex } : {})
+        }
+      : undefined;
+  const envMapIntensity = typeof m.envMapIntensity === "number" && Number.isFinite(m.envMapIntensity) ? Math.max(0, m.envMapIntensity) : undefined;
+
   return {
     type: "pbr" as const,
     baseColor: color ? ([clamp01(color.r), clamp01(color.g), clamp01(color.b)] as [number, number, number]) : fallback.baseColor,
@@ -152,7 +217,9 @@ const extractPbr = (material: THREE.Material | null | undefined, tags: string[])
     transmission: Math.max(0, Math.min(1, transmission)),
     ior: Math.max(1.0, Math.min(3.0, ior)),
     emissive: emissive ? ([clamp01(emissive.r), clamp01(emissive.g), clamp01(emissive.b)] as [number, number, number]) : fallback.emissive,
-    emissiveStrength: toFiniteNumber(m.emissiveIntensity, 1)
+    emissiveStrength: toFiniteNumber(m.emissiveIntensity, 1),
+    ...(textures ? { textures } : {}),
+    ...(envMapIntensity !== undefined ? { envMapIntensity } : {})
   };
 };
 
@@ -171,10 +238,20 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
   args.camera.updateMatrixWorld(true);
   const cameraWorld = args.camera.matrixWorld.clone();
   const camTRS = decomposeBlenderTRS(cameraWorld);
-  const fov =
-    (args.camera as any).isPerspectiveCamera && typeof (args.camera as any).fov === "number"
-      ? toFiniteNumber((args.camera as any).fov, 35)
-      : 35;
+  const isPerspective = (args.camera as any).isPerspectiveCamera === true;
+  const isOrtho = (args.camera as any).isOrthographicCamera === true;
+  const cameraType: SceneExportV1["camera"]["type"] = isOrtho ? "orthographic" : "perspective";
+  const fov = isPerspective && typeof (args.camera as any).fov === "number" ? toFiniteNumber((args.camera as any).fov, 35) : undefined;
+  const orthoScale =
+    isOrtho &&
+    typeof (args.camera as any).left === "number" &&
+    typeof (args.camera as any).right === "number" &&
+    Number.isFinite((args.camera as any).left) &&
+    Number.isFinite((args.camera as any).right)
+      ? Math.max(0.0001, Math.abs((args.camera as any).right - (args.camera as any).left))
+      : undefined;
+  const near = typeof (args.camera as any).near === "number" && Number.isFinite((args.camera as any).near) ? (args.camera as any).near : undefined;
+  const far = typeof (args.camera as any).far === "number" && Number.isFinite((args.camera as any).far) ? (args.camera as any).far : undefined;
 
   const env = args.environment ?? { hdriPath: null, hdriStrength: 0.35 };
   const hdriStrength = Math.max(0, toFiniteNumber(env.hdriStrength, 0.35));
@@ -279,9 +356,13 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
   return {
     meta: { unit: "meters", version: 1, coordinateSystem: "blender_z_up", ...(warnings.length ? { warnings } : {}) },
     camera: {
+      type: cameraType,
       position: camTRS.position,
       rotation: camTRS.rotation,
-      fov,
+      ...(fov !== undefined ? { fov } : {}),
+      ...(orthoScale !== undefined ? { orthoScale } : {}),
+      ...(near !== undefined ? { near } : {}),
+      ...(far !== undefined ? { far } : {}),
       ...(args.cameraTarget
         ? { target: threeToBlenderVec3(args.cameraTarget.x, args.cameraTarget.y, args.cameraTarget.z) }
         : {})

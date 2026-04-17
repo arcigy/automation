@@ -62,7 +62,12 @@ export function createScene(container: HTMLElement) {
   const roomH = 3;
   const plasterTileM = 0.3;
 
-  const floorMat = new THREE.MeshStandardMaterial({ color: 0xf7f7f7, roughness: 0.98, metalness: 0 });
+  const floorMat = getPbrMaterial({
+    fallbackColor: "#f7f7f7",
+    ref: { id: "wood_floor_ash_4186_1k" },
+    uvRepeat: { x: roomW / 2.5, y: roomD / 2.5 },
+    normalScale: 0.6
+  });
   const wallBackMat = getPbrMaterial({
     fallbackColor: "#ffffff",
     ref: { id: "plaster_painted_7664_1k" },

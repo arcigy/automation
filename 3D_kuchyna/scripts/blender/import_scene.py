@@ -114,6 +114,7 @@ def _material_from_spec(cache, spec, tags):
     ior = spec.get("ior") if isinstance(spec, dict) else None
     emissive = spec.get("emissive") if isinstance(spec, dict) else None
     emissive_strength = spec.get("emissiveStrength") if isinstance(spec, dict) else None
+    textures = spec.get("textures") if isinstance(spec, dict) else None
 
     def _num(v, fb):
         return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else fb
@@ -149,7 +150,17 @@ def _material_from_spec(cache, spec, tags):
         ior_v = 1.45
         metal = 0.0
 
-    key = (base_rgb, rough, metal, trans, ior_v, em_rgb, em_s)
+    tex_key = None
+    if isinstance(textures, dict):
+        tex_key = (
+            textures.get("baseColor", {}).get("uri") if isinstance(textures.get("baseColor"), dict) else None,
+            textures.get("normal", {}).get("uri") if isinstance(textures.get("normal"), dict) else None,
+            textures.get("roughness", {}).get("uri") if isinstance(textures.get("roughness"), dict) else None,
+            textures.get("metallic", {}).get("uri") if isinstance(textures.get("metallic"), dict) else None,
+            textures.get("emissive", {}).get("uri") if isinstance(textures.get("emissive"), dict) else None,
+        )
+
+    key = (base_rgb, rough, metal, trans, ior_v, em_rgb, em_s, tex_key)
     if key in cache:
         return cache[key]
 
@@ -184,6 +195,172 @@ def _material_from_spec(cache, spec, tags):
         es_in = _get_bsdf_input(bsdf, ["Emission Strength"])
         if es_in is not None:
             es_in.default_value = em_s
+
+    def _tex(spec_obj):
+        if not isinstance(spec_obj, dict):
+            return None
+        uri = spec_obj.get("uri")
+        if not isinstance(uri, str) or not uri.strip():
+            return None
+        return spec_obj
+
+    def _load_image(uri):
+        p = os.path.abspath(uri)
+        if not os.path.isfile(p):
+            return None
+        try:
+            return bpy.data.images.load(p, check_existing=True)
+        except Exception as e:
+            print(f"[warn] Failed to load texture: {p}: {e}")
+            return None
+
+    any_tex = isinstance(textures, dict) and any(isinstance(v, dict) and isinstance(v.get("uri"), str) and v.get("uri") for v in textures.values())
+    if any_tex:
+        # Shared UV transform: rotate around center + repeat/offset.
+        uv = nodes.new(type="ShaderNodeTexCoord")
+        sub = nodes.new(type="ShaderNodeVectorMath")
+        sub.operation = "SUBTRACT"
+        sub.inputs[1].default_value = (0.5, 0.5, 0.0)
+        add = nodes.new(type="ShaderNodeVectorMath")
+        add.operation = "ADD"
+        add.inputs[1].default_value = (0.5, 0.5, 0.0)
+        mapping = nodes.new(type="ShaderNodeMapping")
+        mapping.vector_type = "POINT"
+
+        links.new(uv.outputs["UV"], sub.inputs[0])
+        links.new(sub.outputs["Vector"], mapping.inputs["Vector"])
+        links.new(mapping.outputs["Vector"], add.inputs[0])
+
+        uv_applied = False
+
+        def _apply_uv(x):
+            nonlocal uv_applied
+            if uv_applied:
+                return
+            if not isinstance(x, dict):
+                return
+            rep = x.get("repeat")
+            off = x.get("offset")
+            rot = x.get("rotationDeg")
+
+            if isinstance(rep, list) and len(rep) == 2 and all(isinstance(v, (int, float)) and math.isfinite(v) for v in rep):
+                mapping.inputs["Scale"].default_value[0] = float(rep[0])
+                mapping.inputs["Scale"].default_value[1] = float(rep[1])
+            if isinstance(off, list) and len(off) == 2 and all(isinstance(v, (int, float)) and math.isfinite(v) for v in off):
+                mapping.inputs["Location"].default_value[0] = float(off[0])
+                mapping.inputs["Location"].default_value[1] = float(off[1])
+            if isinstance(rot, (int, float)) and math.isfinite(rot):
+                mapping.inputs["Rotation"].default_value[2] = math.radians(float(rot))
+            uv_applied = True
+
+        # Base color (supports texture * tint color).
+        bc_spec = _tex(textures.get("baseColor")) if isinstance(textures, dict) else None
+        if bc_spec:
+            img = _load_image(bc_spec.get("uri"))
+            if img:
+                _apply_uv(bc_spec)
+                tex = nodes.new(type="ShaderNodeTexImage")
+                tex.image = img
+                try:
+                    tex.image.colorspace_settings.name = "sRGB"
+                except Exception:
+                    pass
+                links.new(add.outputs["Vector"], tex.inputs["Vector"])
+
+                if base_rgb != (1.0, 1.0, 1.0):
+                    mul = nodes.new(type="ShaderNodeMixRGB")
+                    mul.blend_type = "MULTIPLY"
+                    mul.inputs["Fac"].default_value = 1.0
+                    mul.inputs["Color2"].default_value = (base_rgb[0], base_rgb[1], base_rgb[2], 1.0)
+                    links.new(tex.outputs["Color"], mul.inputs["Color1"])
+                    links.new(mul.outputs["Color"], _get_bsdf_input(bsdf, ["Base Color"]))
+                else:
+                    links.new(tex.outputs["Color"], _get_bsdf_input(bsdf, ["Base Color"]))
+
+        # Roughness texture.
+        r_spec = _tex(textures.get("roughness")) if isinstance(textures, dict) else None
+        if r_spec:
+            img = _load_image(r_spec.get("uri"))
+            if img:
+                _apply_uv(r_spec)
+                tex = nodes.new(type="ShaderNodeTexImage")
+                tex.image = img
+                try:
+                    tex.image.colorspace_settings.name = "Non-Color"
+                except Exception:
+                    pass
+                links.new(add.outputs["Vector"], tex.inputs["Vector"])
+                rgb2bw = nodes.new(type="ShaderNodeRGBToBW")
+                links.new(tex.outputs["Color"], rgb2bw.inputs["Color"])
+                if rough != 1.0:
+                    mul = nodes.new(type="ShaderNodeMath")
+                    mul.operation = "MULTIPLY"
+                    mul.inputs[1].default_value = float(rough)
+                    links.new(rgb2bw.outputs["Val"], mul.inputs[0])
+                    links.new(mul.outputs["Value"], _get_bsdf_input(bsdf, ["Roughness"]))
+                else:
+                    links.new(rgb2bw.outputs["Val"], _get_bsdf_input(bsdf, ["Roughness"]))
+
+        # Metallic texture.
+        m_spec = _tex(textures.get("metallic")) if isinstance(textures, dict) else None
+        if m_spec:
+            img = _load_image(m_spec.get("uri"))
+            if img:
+                _apply_uv(m_spec)
+                tex = nodes.new(type="ShaderNodeTexImage")
+                tex.image = img
+                try:
+                    tex.image.colorspace_settings.name = "Non-Color"
+                except Exception:
+                    pass
+                links.new(add.outputs["Vector"], tex.inputs["Vector"])
+                rgb2bw = nodes.new(type="ShaderNodeRGBToBW")
+                links.new(tex.outputs["Color"], rgb2bw.inputs["Color"])
+                if metal != 1.0:
+                    mul = nodes.new(type="ShaderNodeMath")
+                    mul.operation = "MULTIPLY"
+                    mul.inputs[1].default_value = float(metal)
+                    links.new(rgb2bw.outputs["Val"], mul.inputs[0])
+                    links.new(mul.outputs["Value"], _get_bsdf_input(bsdf, ["Metallic"]))
+                else:
+                    links.new(rgb2bw.outputs["Val"], _get_bsdf_input(bsdf, ["Metallic"]))
+
+        # Normal map.
+        n_spec = _tex(textures.get("normal")) if isinstance(textures, dict) else None
+        if n_spec:
+            img = _load_image(n_spec.get("uri"))
+            if img:
+                _apply_uv(n_spec)
+                tex = nodes.new(type="ShaderNodeTexImage")
+                tex.image = img
+                try:
+                    tex.image.colorspace_settings.name = "Non-Color"
+                except Exception:
+                    pass
+                links.new(add.outputs["Vector"], tex.inputs["Vector"])
+                nm = nodes.new(type="ShaderNodeNormalMap")
+                scale = n_spec.get("scale")
+                if isinstance(scale, (int, float)) and math.isfinite(scale):
+                    nm.inputs["Strength"].default_value = float(max(0.0, scale))
+                links.new(tex.outputs["Color"], nm.inputs["Color"])
+                links.new(nm.outputs["Normal"], _get_bsdf_input(bsdf, ["Normal"]))
+
+        # Emissive texture (optional).
+        e_spec = _tex(textures.get("emissive")) if isinstance(textures, dict) else None
+        if e_spec:
+            img = _load_image(e_spec.get("uri"))
+            if img:
+                _apply_uv(e_spec)
+                tex = nodes.new(type="ShaderNodeTexImage")
+                tex.image = img
+                try:
+                    tex.image.colorspace_settings.name = "sRGB"
+                except Exception:
+                    pass
+                links.new(add.outputs["Vector"], tex.inputs["Vector"])
+                ec_in = _get_bsdf_input(bsdf, ["Emission", "Emission Color"])
+                if ec_in is not None:
+                    links.new(tex.outputs["Color"], ec_in)
 
     cache[key] = mat
     return mat
@@ -277,6 +454,26 @@ def _add_object(scene, obj_spec, mat_cache):
     else:
         obj.data.materials.append(mat)
 
+    # Give the studio room physical thickness so it renders properly (and window cutouts become real openings).
+    if "room" in tags:
+        thickness = None
+        if "floor" in tags:
+            thickness = 0.2
+        elif name.lower().startswith("roomceiling"):
+            thickness = 0.15
+        elif "wall" in tags:
+            thickness = 0.15
+
+        if thickness and thickness > 0:
+            try:
+                mod = obj.modifiers.new(name="Solidify", type="SOLIDIFY")
+                mod.thickness = float(thickness)
+                mod.offset = 0.0  # centered thickness (robust to normal direction)
+                mod.use_even_offset = True
+                mod.use_rim = True
+            except Exception:
+                pass
+
     shadow = obj_spec.get("shadow") if isinstance(obj_spec, dict) else None
     cast = True
     receive = True
@@ -298,12 +495,8 @@ def _hide_preview_helpers(scene):
 
 
 def _open_studio_room(scene):
-    # The Three.js app uses internal "window" lights. In Blender we intentionally keep only SUN + HDRI,
-    # so we open the studio box to let exterior light reach the scene (AI-context preview).
-    for name in ("roomFront", "roomCeiling"):
-        obj = scene.objects.get(name)
-        if obj:
-            obj.hide_render = True
+    # Keep the room sealed so light enters only through actual window openings.
+    return
 
 
 def _setup_camera(scene, camera_spec):
@@ -314,7 +507,11 @@ def _setup_camera(scene, camera_spec):
     pos = _as_vec3(camera_spec.get("position") if isinstance(camera_spec, dict) else None, (2.0, -2.0, 1.4))
     rot = _as_vec3(camera_spec.get("rotation") if isinstance(camera_spec, dict) else None, (0.9, 0.0, 0.0))
     target = _as_vec3(camera_spec.get("target") if isinstance(camera_spec, dict) else None, (0.0, 0.0, 0.0))
+    cam_type = camera_spec.get("type") if isinstance(camera_spec, dict) else "perspective"
     fov_deg = float(camera_spec.get("fov")) if isinstance(camera_spec, dict) and isinstance(camera_spec.get("fov"), (int, float)) else 35.0
+    ortho_scale = float(camera_spec.get("orthoScale")) if isinstance(camera_spec, dict) and isinstance(camera_spec.get("orthoScale"), (int, float)) else None
+    near_v = float(camera_spec.get("near")) if isinstance(camera_spec, dict) and isinstance(camera_spec.get("near"), (int, float)) else None
+    far_v = float(camera_spec.get("far")) if isinstance(camera_spec, dict) and isinstance(camera_spec.get("far"), (int, float)) else None
 
     cam_obj.location = pos
     if isinstance(camera_spec, dict) and camera_spec.get("target") is not None:
@@ -326,7 +523,20 @@ def _setup_camera(scene, camera_spec):
     else:
         cam_obj.rotation_euler = (rot.x, rot.y, rot.z)
     try:
-        cam_data.angle_y = math.radians(max(1.0, min(179.0, fov_deg)))
+        if cam_type == "orthographic":
+            cam_data.type = "ORTHO"
+            if ortho_scale and math.isfinite(ortho_scale):
+                cam_data.ortho_scale = max(0.001, float(ortho_scale))
+        else:
+            cam_data.type = "PERSP"
+            cam_data.angle_y = math.radians(max(1.0, min(179.0, fov_deg)))
+    except Exception:
+        pass
+    try:
+        if near_v and math.isfinite(near_v):
+            cam_data.clip_start = max(0.0001, float(near_v))
+        if far_v and math.isfinite(far_v):
+            cam_data.clip_end = max(cam_data.clip_start + 0.001, float(far_v))
     except Exception:
         pass
 

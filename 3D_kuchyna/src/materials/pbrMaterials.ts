@@ -1,6 +1,6 @@
 import * as THREE from "three";
 
-export type PbrMaterialId = "wood_veneer_oak_7760_1k" | "plaster_painted_7664_1k";
+export type PbrMaterialId = "wood_veneer_oak_7760_1k" | "plaster_painted_7664_1k" | "wood_floor_ash_4186_1k";
 
 export type PbrMaterialRef = {
   id: PbrMaterialId;
@@ -23,7 +23,9 @@ const MATERIAL_META: Record<PbrMaterialId, { worldSizeM: number }> = {
   // Source: Poliigon "Wood Veneer Oak 7760" (user-provided): 2.5m x 2.5m
   wood_veneer_oak_7760_1k: { worldSizeM: 2.5 },
   // Source: Poliigon "Plaster Painted 7664" (user-provided). Tile size set to 30cm x 30cm.
-  plaster_painted_7664_1k: { worldSizeM: 0.3 }
+  plaster_painted_7664_1k: { worldSizeM: 0.3 },
+  // Source: Poliigon "Wood Floor Ash 4186" (user-provided): 2.5m x 2.5m
+  wood_floor_ash_4186_1k: { worldSizeM: 2.5 }
 };
 
 export function getPbrMaterialWorldSizeM(id: PbrMaterialId) {

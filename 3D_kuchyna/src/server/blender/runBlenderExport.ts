@@ -76,6 +76,28 @@ const normalizeHdriPath = (projectRoot: string, hdriPath: unknown): string | nul
   return path.resolve(projectRoot, p);
 };
 
+const normalizePublicAssetPath = (projectRoot: string, uri: unknown): string | null => {
+  if (typeof uri !== "string" || !uri.trim()) return null;
+  const raw = uri.trim();
+
+  const fromPath = (p: string) => {
+    if (path.isAbsolute(p) && !p.startsWith("/")) return p;
+    if (p.startsWith("/")) return path.join(projectRoot, "public", p.slice(1));
+    return path.resolve(projectRoot, p);
+  };
+
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    try {
+      const u = new URL(raw);
+      return fromPath(u.pathname);
+    } catch {
+      return fromPath(raw);
+    }
+  }
+
+  return fromPath(raw);
+};
+
 const withResolvedHdri = (projectRoot: string, sceneJson: unknown) => {
   if (!isRecord(sceneJson)) return sceneJson;
   const env = sceneJson.environment;
@@ -88,6 +110,40 @@ const withResolvedHdri = (projectRoot: string, sceneJson: unknown) => {
       hdriPath: resolved
     }
   };
+};
+
+const withResolvedMaterialTextures = (projectRoot: string, sceneJson: unknown) => {
+  if (!isRecord(sceneJson)) return sceneJson;
+  const objects = sceneJson.objects;
+  if (!Array.isArray(objects)) return sceneJson;
+
+  const nextObjects = objects.map((o) => {
+    if (!isRecord(o)) return o;
+    const mat = o.material;
+    if (!isRecord(mat)) return o;
+    const textures = mat.textures;
+    if (!isRecord(textures)) return o;
+
+    const resolveOne = (t: unknown) => {
+      if (!isRecord(t)) return t;
+      const resolvedUri = normalizePublicAssetPath(projectRoot, t.uri);
+      if (!resolvedUri) return t;
+      return { ...t, uri: resolvedUri };
+    };
+
+    const nextTextures: Record<string, unknown> = { ...textures };
+    for (const k of Object.keys(nextTextures)) nextTextures[k] = resolveOne(nextTextures[k]);
+
+    return {
+      ...o,
+      material: {
+        ...mat,
+        textures: nextTextures
+      }
+    };
+  });
+
+  return { ...sceneJson, objects: nextObjects };
 };
 
 export async function runBlenderExport(args: RunBlenderExportArgs): Promise<RunBlenderExportResult> {
@@ -105,7 +161,7 @@ export async function runBlenderExport(args: RunBlenderExportArgs): Promise<RunB
 
   await mkdir(exportsDir, { recursive: true });
 
-  const sceneJson = withResolvedHdri(projectRoot, args.sceneJson);
+  const sceneJson = withResolvedMaterialTextures(projectRoot, withResolvedHdri(projectRoot, args.sceneJson));
   await writeFile(jsonPath, JSON.stringify(sceneJson, null, 2), "utf-8");
 
   const blenderBin = await resolveBlenderBin(args.blenderPath);
