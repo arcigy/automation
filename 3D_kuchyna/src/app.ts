@@ -1562,7 +1562,7 @@ export function startApp(args: AppArgs) {
 
     const hdri = getHdriSettings();
     const opening = getWindowOpening();
-    const sunDirection = opening ? opening.inwardNormal.clone().multiplyScalar(-1).normalize() : undefined;
+    const sunDirection = opening ? opening.inwardNormal.clone().normalize() : undefined;
     const cameraTarget = (ctl() as any)?.target instanceof THREE.Vector3 ? ((ctl() as any).target as THREE.Vector3) : undefined;
     const daylightIntensity = getDaylightIntensity();
 
@@ -1576,7 +1576,7 @@ export function startApp(args: AppArgs) {
         hdriBackground: hdri.background,
         hdriBackgroundStrength: hdri.backgroundIntensity
       },
-      lighting: { sunDirection, sunStrength: 3.0, sunAngle: 0.8 },
+      lighting: { sunDirection, sunStrength: Math.max(0.1, daylightIntensity * 2.2), sunAngle: 0.5 },
       window: { opening, daylightIntensity },
       includeInvisible: false
     });
