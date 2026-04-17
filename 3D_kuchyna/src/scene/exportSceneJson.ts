@@ -20,11 +20,22 @@ export type SceneExportV1 = {
   environment: {
     hdriPath: string | null;
     hdriStrength: number;
+    hdriBackground?: boolean;
+    hdriBackgroundStrength?: number;
   };
   lighting: {
     sunDirection: [number, number, number];
     sunStrength: number;
     sunAngle: number;
+  };
+  window?: {
+    opening?: {
+      center: [number, number, number];
+      inwardNormal: [number, number, number];
+      width: number;
+      height: number;
+    };
+    daylightIntensity?: number;
   };
   objects: Array<{
     name: string;
@@ -227,8 +238,9 @@ export type ExportSceneArgs = {
   scene: THREE.Scene;
   camera: THREE.Camera;
   cameraTarget?: THREE.Vector3;
-  environment?: { hdriPath: string | null; hdriStrength?: number };
+  environment?: { hdriPath: string | null; hdriStrength?: number; hdriBackground?: boolean; hdriBackgroundStrength?: number };
   lighting?: { sunDirection?: THREE.Vector3; sunStrength?: number; sunAngle?: number };
+  window?: { opening?: { center: THREE.Vector3; inwardNormal: THREE.Vector3; width: number; height: number } | null; daylightIntensity?: number };
   includeInvisible?: boolean;
 };
 
@@ -255,6 +267,8 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
 
   const env = args.environment ?? { hdriPath: null, hdriStrength: 0.35 };
   const hdriStrength = Math.max(0, toFiniteNumber(env.hdriStrength, 0.35));
+  const hdriBackground = typeof env.hdriBackground === "boolean" ? env.hdriBackground : true;
+  const hdriBackgroundStrength = Math.max(0, toFiniteNumber(env.hdriBackgroundStrength, hdriStrength));
 
   const sunDirectionThree = args.lighting?.sunDirection?.clone().normalize() ?? new THREE.Vector3(-0.35, -1, -0.2).normalize();
   const sunDirB = threeToBlenderVec3(sunDirectionThree.x, sunDirectionThree.y, sunDirectionThree.z);
@@ -367,12 +381,43 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
         ? { target: threeToBlenderVec3(args.cameraTarget.x, args.cameraTarget.y, args.cameraTarget.z) }
         : {})
     },
-    environment: { hdriPath: env.hdriPath ?? null, hdriStrength },
+    environment: {
+      hdriPath: env.hdriPath ?? null,
+      hdriStrength,
+      hdriBackground,
+      hdriBackgroundStrength
+    },
     lighting: {
       sunDirection,
       sunStrength: Math.max(0, toFiniteNumber(args.lighting?.sunStrength, 3.0)),
       sunAngle: Math.max(0.001, toFiniteNumber(args.lighting?.sunAngle, 0.8))
     },
+    ...(args.window?.opening
+      ? (() => {
+          const opening = args.window!.opening!;
+          const c = opening.center;
+          const n = opening.inwardNormal.clone();
+          if (n.lengthSq() > 1e-12) n.normalize();
+          const centerB = threeToBlenderVec3(c.x, c.y, c.z);
+          const normalB = threeToBlenderVec3(n.x, n.y, n.z);
+          const len = Math.hypot(normalB[0], normalB[1], normalB[2]) || 1;
+          const inwardNormal = [normalB[0] / len, normalB[1] / len, normalB[2] / len] as [number, number, number];
+
+          return {
+            window: {
+              opening: {
+                center: centerB,
+                inwardNormal,
+                width: Math.max(0.01, toFiniteNumber(opening.width, 1)),
+                height: Math.max(0.01, toFiniteNumber(opening.height, 1))
+              },
+              ...(typeof args.window!.daylightIntensity === "number" && Number.isFinite(args.window!.daylightIntensity)
+                ? { daylightIntensity: Math.max(0, args.window!.daylightIntensity) }
+                : {})
+            }
+          } as const;
+        })()
+      : {}),
     objects
   };
 }

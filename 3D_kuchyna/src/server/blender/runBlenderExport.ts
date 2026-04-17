@@ -71,6 +71,15 @@ const resolveBlenderBin = async (explicit: string | undefined) => {
 const normalizeHdriPath = (projectRoot: string, hdriPath: unknown): string | null => {
   if (typeof hdriPath !== "string" || !hdriPath.trim()) return null;
   const p = hdriPath.trim();
+  if (p.startsWith("http://") || p.startsWith("https://")) {
+    try {
+      const u = new URL(p);
+      if (u.pathname.startsWith("/")) return path.join(projectRoot, "public", u.pathname.slice(1));
+      return path.resolve(projectRoot, u.pathname);
+    } catch {
+      // fall through
+    }
+  }
   if (path.isAbsolute(p) && !p.startsWith("/")) return p; // Windows/Posix absolute filesystem path
   if (p.startsWith("/")) return path.join(projectRoot, "public", p.slice(1));
   return path.resolve(projectRoot, p);

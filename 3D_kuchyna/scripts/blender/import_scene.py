@@ -40,10 +40,28 @@ def _reset_scene():
     return scene
 
 
-def _set_render_defaults(scene):
+def _set_render_defaults(scene, preview):
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
-    scene.cycles.samples = 20
+    scene.cycles.samples = 32 if preview else 256
+    try:
+        scene.cycles.use_adaptive_sampling = True
+        scene.cycles.adaptive_threshold = 0.01 if preview else 0.005
+    except Exception:
+        pass
+    try:
+        scene.cycles.use_denoising = True
+        scene.cycles.denoiser = "OPENIMAGEDENOISE"
+    except Exception:
+        pass
+    try:
+        scene.cycles.max_bounces = 12
+        scene.cycles.diffuse_bounces = 4
+        scene.cycles.glossy_bounces = 4
+        scene.cycles.transmission_bounces = 8
+        scene.cycles.transparent_max_bounces = 8
+    except Exception:
+        pass
     scene.render.resolution_x = 1024
     scene.render.resolution_y = 1024
     scene.render.resolution_percentage = 100
@@ -72,9 +90,20 @@ def _world_setup(scene, hdri_path, strength):
 
     nodes.clear()
     out = nodes.new(type="ShaderNodeOutputWorld")
-    bg = nodes.new(type="ShaderNodeBackground")
-    bg.inputs["Strength"].default_value = float(max(0.0, strength))
-    links.new(bg.outputs["Background"], out.inputs["Surface"])
+    bg_env = nodes.new(type="ShaderNodeBackground")
+    bg_env.name = "WorldBG_Env"
+    bg_cam = nodes.new(type="ShaderNodeBackground")
+    bg_cam.name = "WorldBG_Cam"
+    mix = nodes.new(type="ShaderNodeMixShader")
+    lp = nodes.new(type="ShaderNodeLightPath")
+
+    bg_env.inputs["Strength"].default_value = float(max(0.0, strength))
+    bg_cam.inputs["Strength"].default_value = float(max(0.0, strength))
+
+    links.new(lp.outputs["Is Camera Ray"], mix.inputs["Fac"])
+    links.new(bg_env.outputs["Background"], mix.inputs[1])
+    links.new(bg_cam.outputs["Background"], mix.inputs[2])
+    links.new(mix.outputs["Shader"], out.inputs["Surface"])
 
     hdri_ok = False
     if hdri_path and isinstance(hdri_path, str):
@@ -83,16 +112,19 @@ def _world_setup(scene, hdri_path, strength):
             try:
                 env = nodes.new(type="ShaderNodeTexEnvironment")
                 env.image = bpy.data.images.load(p, check_existing=True)
-                links.new(env.outputs["Color"], bg.inputs["Color"])
+                links.new(env.outputs["Color"], bg_env.inputs["Color"])
+                links.new(env.outputs["Color"], bg_cam.inputs["Color"])
                 hdri_ok = True
             except Exception as e:
                 print(f"[warn] Failed to load HDRI: {p}: {e}")
 
     if not hdri_ok:
-        bg.inputs["Color"].default_value = (0.85, 0.85, 0.85, 1.0)
+        bg_env.inputs["Color"].default_value = (0.85, 0.85, 0.85, 1.0)
+        bg_cam.inputs["Color"].default_value = (0.85, 0.85, 0.85, 1.0)
         # Keep a readable baseline even without HDRI, but don't overpower the SUN.
-        s = float(bg.inputs["Strength"].default_value)
-        bg.inputs["Strength"].default_value = max(0.25, min(0.6, s))
+        s = float(bg_env.inputs["Strength"].default_value)
+        bg_env.inputs["Strength"].default_value = max(0.25, min(0.6, s))
+        bg_cam.inputs["Strength"].default_value = max(0.25, min(0.6, float(bg_cam.inputs["Strength"].default_value)))
 
 
 def _ensure_material_cache():
@@ -572,6 +604,44 @@ def _setup_sun(scene, light_spec):
     sun_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
 
 
+def _setup_window_portal(scene, window_spec):
+    if not isinstance(window_spec, dict):
+        return
+    opening = window_spec.get("opening")
+    if not isinstance(opening, dict):
+        return
+
+    center = _as_vec3(opening.get("center"), (0.0, 0.0, 0.0))
+    inward = _as_vec3(opening.get("inwardNormal"), (0.0, 0.0, -1.0))
+    if inward.length < 1e-6:
+        inward = Vector((0.0, 0.0, -1.0))
+    inward.normalize()
+
+    width = float(opening.get("width")) if isinstance(opening.get("width"), (int, float)) else 1.0
+    height = float(opening.get("height")) if isinstance(opening.get("height"), (int, float)) else 1.0
+    width = max(0.05, min(20.0, width))
+    height = max(0.05, min(20.0, height))
+
+    light_data = bpy.data.lights.new(name="WindowPortal", type="AREA")
+    light_obj = bpy.data.objects.new(name="WindowPortal", object_data=light_data)
+    scene.collection.objects.link(light_obj)
+
+    light_data.shape = "RECTANGLE"
+    light_data.size = width
+    light_data.size_y = height
+    light_data.energy = 0.0
+
+    # Place slightly outside and face inward.
+    light_obj.location = center - inward * 0.02
+    light_obj.rotation_euler = inward.to_track_quat("-Z", "Y").to_euler()
+
+    # Cycles portal (if available).
+    try:
+        light_data.cycles.is_portal = True
+    except Exception:
+        pass
+
+
 def main():
     argv = _argv_after_double_dash(sys.argv)
     if len(argv) < 2:
@@ -585,15 +655,29 @@ def main():
     payload = _read_json(json_path)
 
     scene = _reset_scene()
-    _set_render_defaults(scene)
+    _set_render_defaults(scene, preview_out is not None)
 
     env = payload.get("environment") if isinstance(payload, dict) else None
     hdri_path = env.get("hdriPath") if isinstance(env, dict) else None
     hdri_strength = env.get("hdriStrength") if isinstance(env, dict) else 0.35
+    hdri_bg = env.get("hdriBackground") if isinstance(env, dict) else True
+    hdri_bg_strength = env.get("hdriBackgroundStrength") if isinstance(env, dict) else None
     _world_setup(scene, hdri_path, float(hdri_strength) if isinstance(hdri_strength, (int, float)) else 0.35)
+    if isinstance(scene.world, bpy.types.World) and scene.world.use_nodes:
+        try:
+            nodes = scene.world.node_tree.nodes
+            bg_cam = nodes.get("WorldBG_Cam")
+            if bg_cam is not None:
+                if isinstance(hdri_bg_strength, (int, float)) and math.isfinite(hdri_bg_strength):
+                    bg_cam.inputs["Strength"].default_value = float(max(0.0, hdri_bg_strength))
+                if not bool(hdri_bg):
+                    bg_cam.inputs["Strength"].default_value = 0.0
+        except Exception:
+            pass
 
     _setup_camera(scene, payload.get("camera") if isinstance(payload, dict) else {})
     _setup_sun(scene, payload.get("lighting") if isinstance(payload, dict) else {})
+    _setup_window_portal(scene, payload.get("window") if isinstance(payload, dict) else None)
 
     mat_cache = _ensure_material_cache()
     objs = payload.get("objects") if isinstance(payload, dict) else []

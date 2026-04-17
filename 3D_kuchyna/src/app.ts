@@ -45,6 +45,7 @@ export function startApp(args: AppArgs) {
     setHdri,
     getHdriSettings,
     setDaylightIntensity,
+    getDaylightIntensity,
     setShadowAlgorithm,
     getShadowAlgorithm,
     setWindowOpening,
@@ -1563,13 +1564,20 @@ export function startApp(args: AppArgs) {
     const opening = getWindowOpening();
     const sunDirection = opening ? opening.inwardNormal.clone().multiplyScalar(-1).normalize() : undefined;
     const cameraTarget = (ctl() as any)?.target instanceof THREE.Vector3 ? ((ctl() as any).target as THREE.Vector3) : undefined;
+    const daylightIntensity = getDaylightIntensity();
 
     const payload = exportSceneToJson({
       scene,
       camera: cam(),
       cameraTarget,
-      environment: { hdriPath: hdri.id, hdriStrength: hdri.envIntensity },
+      environment: {
+        hdriPath: hdri.id,
+        hdriStrength: hdri.envIntensity,
+        hdriBackground: hdri.background,
+        hdriBackgroundStrength: hdri.backgroundIntensity
+      },
       lighting: { sunDirection, sunStrength: 3.0, sunAngle: 0.8 },
+      window: { opening, daylightIntensity },
       includeInvisible: false
     });
 
