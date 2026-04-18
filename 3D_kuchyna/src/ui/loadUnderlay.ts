@@ -1,5 +1,5 @@
 export type UnderlaySource = {
-  kind: "png" | "pdf";
+  kind: "png" | "jpg" | "pdf";
   name: string;
   canvas: HTMLCanvasElement;
   physicalSizeMm?: { w: number; h: number } | null;
@@ -8,9 +8,14 @@ export type UnderlaySource = {
 export async function loadUnderlayToCanvas(file: File): Promise<UnderlaySource> {
   const name = file.name || "underlay";
   const ext = (name.split(".").pop() || "").toLowerCase();
-  const kind: UnderlaySource["kind"] = ext === "pdf" || file.type === "application/pdf" ? "pdf" : "png";
+  const kind: UnderlaySource["kind"] =
+    ext === "pdf" || file.type === "application/pdf"
+      ? "pdf"
+      : ext === "jpg" || ext === "jpeg" || file.type === "image/jpeg"
+        ? "jpg"
+        : "png";
 
-  if (kind === "png") {
+  if (kind !== "pdf") {
     const buf = new Uint8Array(await file.arrayBuffer());
     const bmp = await createImageBitmap(file);
     const canvas = document.createElement("canvas");
@@ -21,21 +26,22 @@ export async function loadUnderlayToCanvas(file: File): Promise<UnderlaySource> 
     ctx.drawImage(bmp, 0, 0);
     bmp.close?.();
 
-    const readU32be = (i: number) => (buf[i] << 24) | (buf[i + 1] << 16) | (buf[i + 2] << 8) | buf[i + 3];
-    const readType = (i: number) => String.fromCharCode(buf[i], buf[i + 1], buf[i + 2], buf[i + 3]);
-    const isPng =
-      buf.length >= 8 &&
-      buf[0] === 0x89 &&
-      buf[1] === 0x50 &&
-      buf[2] === 0x4e &&
-      buf[3] === 0x47 &&
-      buf[4] === 0x0d &&
-      buf[5] === 0x0a &&
-      buf[6] === 0x1a &&
-      buf[7] === 0x0a;
-
     let physicalSizeMm: UnderlaySource["physicalSizeMm"] = null;
-    if (isPng) {
+    if (kind === "png") {
+      const readU32be = (i: number) => (buf[i] << 24) | (buf[i + 1] << 16) | (buf[i + 2] << 8) | buf[i + 3];
+      const readType = (i: number) => String.fromCharCode(buf[i], buf[i + 1], buf[i + 2], buf[i + 3]);
+      const isPng =
+        buf.length >= 8 &&
+        buf[0] === 0x89 &&
+        buf[1] === 0x50 &&
+        buf[2] === 0x4e &&
+        buf[3] === 0x47 &&
+        buf[4] === 0x0d &&
+        buf[5] === 0x0a &&
+        buf[6] === 0x1a &&
+        buf[7] === 0x0a;
+
+      if (!isPng) return { kind, name, canvas, physicalSizeMm: null };
       let off = 8;
       while (off + 12 <= buf.length) {
         const len = readU32be(off);

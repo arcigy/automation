@@ -136,7 +136,7 @@ export function startApp(args: AppArgs) {
 
   const underlayState = {
     sourceName: null as string | null,
-    sourceKind: null as "png" | "pdf" | null,
+    sourceKind: null as "png" | "jpg" | "pdf" | null,
     baseWidthM: 1,
     baseHeightM: 1,
     scale: 1,
@@ -176,7 +176,7 @@ export function startApp(args: AppArgs) {
   function setUnderlayFromCanvas(
     canvas: HTMLCanvasElement,
     name: string,
-    kind: "png" | "pdf",
+    kind: "png" | "jpg" | "pdf",
     physicalSizeMm?: { w: number; h: number } | null
   ) {
     const prev = underlayMat.map;
@@ -2571,7 +2571,7 @@ export function startApp(args: AppArgs) {
 
       const file = document.createElement("input");
       file.type = "file";
-      file.accept = ".png,.pdf,image/png,application/pdf";
+      file.accept = ".png,.jpg,.jpeg,.pdf,image/png,image/jpeg,application/pdf";
       row("Upload", file);
 
       const scaleInput = document.createElement("input");
@@ -2683,8 +2683,8 @@ export function startApp(args: AppArgs) {
         try {
           const res = await loadUnderlayToCanvas(f);
           let physical = res.physicalSizeMm ?? null;
-          if (res.kind === "png" && !physical) {
-            const wPrompt = window.prompt("PNG šírka v mm (prázdne = fit do miestnosti)", "");
+          if ((res.kind === "png" || res.kind === "jpg") && !physical) {
+            const wPrompt = window.prompt("Obrázok šírka v mm (prázdne = fit do miestnosti)", "");
             const wMm = wPrompt && wPrompt.trim().length > 0 ? Number(wPrompt.trim().replace(",", ".")) : null;
             if (wMm && Number.isFinite(wMm) && wMm > 0) {
               const aspect = res.canvas.height / Math.max(1, res.canvas.width);
