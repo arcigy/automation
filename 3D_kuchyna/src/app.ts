@@ -142,7 +142,8 @@ export function startApp(args: AppArgs) {
     scale: 1,
     rotationDeg: 0,
     opacity: 0.65,
-    offsetMm: { x: 0, z: 0 }
+    offsetMm: { x: 0, z: 0 },
+    pinned: false
   };
 
   const underlayCal = {
@@ -172,7 +173,12 @@ export function startApp(args: AppArgs) {
     underlayMesh.geometry = new THREE.PlaneGeometry(underlayState.baseWidthM, underlayState.baseHeightM);
   }
 
-  function setUnderlayFromCanvas(canvas: HTMLCanvasElement, name: string, kind: "png" | "pdf") {
+  function setUnderlayFromCanvas(
+    canvas: HTMLCanvasElement,
+    name: string,
+    kind: "png" | "pdf",
+    physicalSizeMm?: { w: number; h: number } | null
+  ) {
     const prev = underlayMat.map;
     if (prev) prev.dispose();
 
@@ -183,18 +189,22 @@ export function startApp(args: AppArgs) {
     underlayMat.map = tex;
     underlayMat.needsUpdate = true;
 
-    const roomW = roomBounds.halfW * 2;
-    const roomD = roomBounds.halfD * 2;
-    const aspect = canvas.height / Math.max(1, canvas.width);
+    if (physicalSizeMm && Number.isFinite(physicalSizeMm.w) && Number.isFinite(physicalSizeMm.h) && physicalSizeMm.w > 0 && physicalSizeMm.h > 0) {
+      setUnderlayBaseSize(physicalSizeMm.w / 1000, physicalSizeMm.h / 1000);
+    } else {
+      const roomW = roomBounds.halfW * 2;
+      const roomD = roomBounds.halfD * 2;
+      const aspect = canvas.height / Math.max(1, canvas.width);
 
-    let w = roomW;
-    let h = w * aspect;
-    if (h > roomD) {
-      h = roomD;
-      w = h / aspect;
+      let w = roomW;
+      let h = w * aspect;
+      if (h > roomD) {
+        h = roomD;
+        w = h / aspect;
+      }
+
+      setUnderlayBaseSize(w, h);
     }
-
-    setUnderlayBaseSize(w, h);
 
     underlayState.sourceName = name;
     underlayState.sourceKind = kind;
@@ -202,6 +212,7 @@ export function startApp(args: AppArgs) {
     underlayState.rotationDeg = 0;
     underlayState.opacity = 0.65;
     underlayState.offsetMm = { x: 0, z: 0 };
+    underlayState.pinned = false;
     underlayMesh.visible = true;
     updateUnderlayTransform();
   }
@@ -213,6 +224,7 @@ export function startApp(args: AppArgs) {
     underlayState.rotationDeg = 0;
     underlayState.opacity = 0.65;
     underlayState.offsetMm = { x: 0, z: 0 };
+    underlayState.pinned = false;
     underlayMesh.visible = false;
     if (underlayMat.map) {
       underlayMat.map.dispose();
@@ -237,8 +249,11 @@ export function startApp(args: AppArgs) {
   let selectedWallId: string | null = null;
   const selectedInstanceIds = new Set<string>();
   const selectedWallIds = new Set<string>();
+  const pinnedInstanceIds = new Set<string>();
+  const pinnedWallIds = new Set<string>();
   let selectedInstanceBox: THREE.BoxHelper | null = null;
   let selectedWallBox: THREE.BoxHelper | null = null;
+  let selectedUnderlayBox: THREE.BoxHelper | null = null;
 
   type WallId = "back" | "left" | "right";
   type WindowParams = {
@@ -257,7 +272,7 @@ export function startApp(args: AppArgs) {
   };
 
   let windowInst: WindowInstance | null = null;
-  type SelectedKind = "module" | "window" | "wall" | null;
+  type SelectedKind = "module" | "window" | "wall" | "underlay" | null;
   let selectedKind: SelectedKind = null;
 
   type WallParams = {
@@ -871,6 +886,13 @@ export function startApp(args: AppArgs) {
     lastValid: new THREE.Vector3()
   };
 
+  const underlayDragState = {
+    active: false,
+    pointerId: null as number | null,
+    startWorld: new THREE.Vector3(),
+    startOffsetMm: { x: 0, z: 0 }
+  };
+
   const windowDragState = {
     active: false,
     wall: null as WallId | null,
@@ -888,10 +910,155 @@ export function startApp(args: AppArgs) {
     return false;
   };
 
+  const setToolSelect = () => {
+    ensureLayoutMode();
+    layoutTool = "select";
+    wallDraw.active = false;
+    wallDraw.a = null;
+    wallDraw.chainStart = null;
+    wallDraw.segments = 0;
+    if (wallDraw.preview) {
+      layoutRoot.remove(wallDraw.preview);
+      wallDraw.preview.geometry.dispose();
+      (wallDraw.preview.material as THREE.Material).dispose();
+      wallDraw.preview = null;
+    }
+    wallSnapHud.style.display = "none";
+    setUnderlayStatus("");
+    mountProps();
+  };
+
+  const setToolWall = () => {
+    ensureLayoutMode();
+    layoutTool = "wall";
+    wallDraw.active = false;
+    wallDraw.a = null;
+    if (wallDraw.preview) {
+      layoutRoot.remove(wallDraw.preview);
+      wallDraw.preview.geometry.dispose();
+      (wallDraw.preview.material as THREE.Material).dispose();
+      wallDraw.preview = null;
+    }
+    wallDraw.chainStart = null;
+    wallDraw.segments = 0;
+    view2d.checked = true;
+    setView2d(true);
+    selectedKind = null;
+    selectedWallId = null;
+    setInstanceSelected(null);
+    if (selectedWallBox) {
+      scene.remove(selectedWallBox);
+      selectedWallBox.geometry.dispose();
+      (selectedWallBox.material as THREE.Material).dispose();
+      selectedWallBox = null;
+    }
+    mountProps();
+  };
+
   window.addEventListener("keydown", (ev) => {
     if (isTypingTarget(ev.target)) return;
 
     if (mode === "layout") {
+      const nudgeStepM = () => {
+        if (viewMode !== "2d") return 0;
+        const c = cam();
+        if (!(c instanceof THREE.OrthographicCamera)) return 0;
+        const visibleW = Math.abs(c.right - c.left) / Math.max(1e-6, c.zoom);
+        const visibleH = Math.abs(c.top - c.bottom) / Math.max(1e-6, c.zoom);
+        const visible = Math.min(visibleW, visibleH);
+        if (visible >= 20) return 1;
+        if (visible >= 12) return 0.5;
+        if (visible >= 7) return 0.25;
+        if (visible >= 4) return 0.1;
+        if (visible >= 2) return 0.05;
+        return 0.01;
+      };
+
+      const nudgeSelection = (dxM: number, dzM: number) => {
+        if (viewMode !== "2d" || layoutTool !== "select") return false;
+        if (measureState.enabled) return false;
+        if (dragState.active || windowDragState.active || wallEditHud.drag || marquee.active) return false;
+        if (underlayCal.active) return false;
+
+        const dxMm = Math.round(dxM * 1000);
+        const dzMm = Math.round(dzM * 1000);
+
+        let moved = false;
+
+        // Walls (single or multi)
+        const wallIds = selectedWallIds.size > 0 ? Array.from(selectedWallIds) : selectedKind === "wall" && selectedWallId ? [selectedWallId] : [];
+        if (wallIds.length > 0) {
+          for (const id of wallIds) {
+            const w = walls.find((x) => x.id === id) ?? null;
+            if (!w) continue;
+            w.params.aMm = { x: w.params.aMm.x + dxMm, z: w.params.aMm.z + dzMm };
+            w.params.bMm = { x: w.params.bMm.x + dxMm, z: w.params.bMm.z + dzMm };
+            rebuildWall(w);
+            moved = true;
+          }
+          if (moved) rebuildWallPlanMesh();
+        }
+
+        // Modules (single or multi)
+        const instIds =
+          selectedInstanceIds.size > 0
+            ? Array.from(selectedInstanceIds)
+            : selectedKind === "module" && selectedInstanceId
+              ? [selectedInstanceId]
+              : [];
+        if (instIds.length > 0) {
+          for (const id of instIds) {
+            const inst = findInstance(id);
+            if (!inst) continue;
+            const prev = inst.root.position.clone();
+            const desired = new THREE.Vector3(inst.root.position.x + dxMm / 1000, 0, inst.root.position.z + dzMm / 1000);
+            const desiredInRoom = applyWallConstraints(inst, desired);
+            inst.root.position.copy(desiredInRoom);
+            if (anyOverlap(inst, null)) {
+              inst.root.position.copy(prev);
+            } else {
+              moved = true;
+            }
+          }
+          if (moved) updateLayoutPanel();
+        }
+
+        if (moved) {
+          mountProps();
+        }
+        return moved;
+      };
+
+      if (ev.key.startsWith("Arrow")) {
+        const step = nudgeStepM();
+        if (step > 0) {
+          let dx = 0;
+          let dz = 0;
+          if (ev.key === "ArrowLeft") dx = -step;
+          if (ev.key === "ArrowRight") dx = step;
+          if (ev.key === "ArrowUp") dz = -step;
+          if (ev.key === "ArrowDown") dz = step;
+          if (dx !== 0 || dz !== 0) {
+            const moved = nudgeSelection(dx, dz);
+            if (moved) {
+              ev.preventDefault();
+              return;
+            }
+          }
+        }
+      }
+
+      if ((ev.key === "w" || ev.key === "W") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        setToolWall();
+        ev.preventDefault();
+        return;
+      }
+      if (ev.key === " " || ev.code === "Space") {
+        setToolSelect();
+        ev.preventDefault();
+        return;
+      }
+
       if (ev.key === "Escape" && layoutTool === "wall") {
         wallDraw.active = false;
         wallDraw.a = null;
@@ -1644,6 +1811,11 @@ export function startApp(args: AppArgs) {
 
   // Ribbon (Revit-style tabs) [legacy]
   let underlayStatusEl: HTMLDivElement | null = null;
+  let underlayScaleEl: HTMLInputElement | null = null;
+  let underlayOffXEl: HTMLInputElement | null = null;
+  let underlayOffZEl: HTMLInputElement | null = null;
+  let underlayRotEl: HTMLInputElement | null = null;
+  let underlayOpacityEl: HTMLInputElement | null = null;
   const setUnderlayStatus = (text: string) => {
     if (underlayStatusEl) underlayStatusEl.textContent = text;
   };
@@ -2402,12 +2574,12 @@ export function startApp(args: AppArgs) {
       file.accept = ".png,.pdf,image/png,application/pdf";
       row("Upload", file);
 
-      const importScale = document.createElement("input");
-      importScale.type = "number";
-      importScale.step = "0.1";
-      importScale.min = "0.001";
-      importScale.value = "1";
-      row("Import scale (x)", importScale);
+      const scaleInput = document.createElement("input");
+      scaleInput.type = "text";
+      scaleInput.inputMode = "decimal";
+      scaleInput.value = "1";
+      row("Scale (x or 1:n)", scaleInput);
+      underlayScaleEl = scaleInput;
 
       const opacity = document.createElement("input");
       opacity.type = "range";
@@ -2416,24 +2588,28 @@ export function startApp(args: AppArgs) {
       opacity.step = "0.01";
       opacity.value = String(underlayState.opacity);
       row("Opacity", opacity);
+      underlayOpacityEl = opacity;
 
       const rot = document.createElement("input");
       rot.type = "number";
       rot.step = "1";
       rot.value = String(underlayState.rotationDeg);
       row("Rotate (deg)", rot);
+      underlayRotEl = rot;
 
       const offX = document.createElement("input");
       offX.type = "number";
       offX.step = "1";
       offX.value = String(underlayState.offsetMm.x);
       row("Offset X (mm)", offX);
+      underlayOffXEl = offX;
 
       const offZ = document.createElement("input");
       offZ.type = "number";
       offZ.step = "1";
       offZ.value = String(underlayState.offsetMm.z);
       row("Offset Z (mm)", offZ);
+      underlayOffZEl = offZ;
 
       const known = document.createElement("input");
       known.type = "number";
@@ -2449,6 +2625,16 @@ export function startApp(args: AppArgs) {
       confirmBtn.type = "button";
       confirmBtn.textContent = "Confirm";
       actions.appendChild(confirmBtn);
+
+      const pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      pinBtn.textContent = "Pin selected";
+      actions.appendChild(pinBtn);
+
+      const unpinUnderlayBtn = document.createElement("button");
+      unpinUnderlayBtn.type = "button";
+      unpinUnderlayBtn.textContent = "Unpin underlay";
+      actions.appendChild(unpinUnderlayBtn);
 
       const calBtn = document.createElement("button");
       calBtn.type = "button";
@@ -2475,22 +2661,49 @@ export function startApp(args: AppArgs) {
         ensureLayoutMode();
         const f = file.files?.[0] ?? null;
         if (!f) return;
-        const scalePrompt = window.prompt("Mierka pri importe (x)", importScale.value);
-        if (scalePrompt !== null && scalePrompt.trim() !== "") importScale.value = scalePrompt.trim();
-        const uploadScale = Math.max(0.001, Number(importScale.value) || 1);
+        const parseScale = (s: string) => {
+          const v = s.trim().replace(",", ".");
+          if (v.includes(":") || v.includes("/")) {
+            const parts = v.split(v.includes(":") ? ":" : "/").map((x) => x.trim());
+            const a = Number(parts[0]);
+            const b = Number(parts[1]);
+            if (Number.isFinite(a) && Number.isFinite(b) && a !== 0) return Math.abs(b / a);
+          }
+          const n = Number(v);
+          if (Number.isFinite(n)) return Math.abs(n);
+          return null;
+        };
+
+        const scalePrompt = window.prompt("Mierka pri importe (x alebo 1:n)", scaleInput.value);
+        if (scalePrompt !== null && scalePrompt.trim() !== "") scaleInput.value = scalePrompt.trim();
+        const parsed = parseScale(scaleInput.value) ?? 1;
+        const uploadScale = Math.max(0.001, parsed);
+        scaleInput.value = String(uploadScale);
         setUnderlayStatus("Loading...");
         try {
           const res = await loadUnderlayToCanvas(f);
-          setUnderlayFromCanvas(res.canvas, res.name, res.kind);
+          let physical = res.physicalSizeMm ?? null;
+          if (res.kind === "png" && !physical) {
+            const wPrompt = window.prompt("PNG šírka v mm (prázdne = fit do miestnosti)", "");
+            const wMm = wPrompt && wPrompt.trim().length > 0 ? Number(wPrompt.trim().replace(",", ".")) : null;
+            if (wMm && Number.isFinite(wMm) && wMm > 0) {
+              const aspect = res.canvas.height / Math.max(1, res.canvas.width);
+              physical = { w: wMm, h: wMm * aspect };
+            }
+          }
+
+          setUnderlayFromCanvas(res.canvas, res.name, res.kind, physical);
           underlayState.scale = uploadScale;
           const t = ctl().target;
           underlayState.offsetMm = { x: Math.round(t.x * 1000), z: Math.round(t.z * 1000) };
           updateUnderlayTransform();
+          if (underlayScaleEl) underlayScaleEl.value = String(underlayState.scale);
           opacity.value = String(underlayState.opacity);
           rot.value = String(underlayState.rotationDeg);
           offX.value = String(underlayState.offsetMm.x);
           offZ.value = String(underlayState.offsetMm.z);
-          setUnderlayStatus(`Underlay (${res.kind.toUpperCase()}): ${res.name}`);
+          const mmTxt = physical ? ` - ${Math.round(physical.w)}x${Math.round(physical.h)} mm` : "";
+          setUnderlayStatus(`Underlay (${res.kind.toUpperCase()}): ${res.name}${mmTxt}`);
         } catch (e) {
           setUnderlayStatus(`Error: ${(e as Error).message}`);
         } finally {
@@ -2504,6 +2717,7 @@ export function startApp(args: AppArgs) {
       rot.addEventListener("input", setPending);
       offX.addEventListener("input", setPending);
       offZ.addEventListener("input", setPending);
+      scaleInput.addEventListener("input", setPending);
 
       confirmBtn.addEventListener("click", () => {
         ensureLayoutMode();
@@ -2512,12 +2726,53 @@ export function startApp(args: AppArgs) {
           return;
         }
 
+        const v = scaleInput.value.trim().replace(",", ".");
+        let scale = 1;
+        if (v.includes(":") || v.includes("/")) {
+          const parts = v.split(v.includes(":") ? ":" : "/").map((x) => x.trim());
+          const a = Number(parts[0]);
+          const b = Number(parts[1]);
+          if (Number.isFinite(a) && Number.isFinite(b) && a !== 0) scale = Math.abs(b / a);
+        } else {
+          const n = Number(v);
+          if (Number.isFinite(n)) scale = Math.abs(n);
+        }
+
+        underlayState.scale = Math.max(0.001, scale || 1);
+        scaleInput.value = String(underlayState.scale);
         underlayState.opacity = Math.min(1, Math.max(0, Number(opacity.value) || 0));
         underlayState.rotationDeg = Number(rot.value) || 0;
         underlayState.offsetMm.x = Number(offX.value) || 0;
         underlayState.offsetMm.z = Number(offZ.value) || 0;
         updateUnderlayTransform();
         setUnderlayStatus("Confirmed.");
+      });
+
+      pinBtn.addEventListener("click", () => {
+        ensureLayoutMode();
+        for (const id of selectedInstanceIds) pinnedInstanceIds.add(id);
+        for (const id of selectedWallIds) pinnedWallIds.add(id);
+        if (selectedKind === "underlay" && underlayMesh.visible) {
+          underlayState.pinned = true;
+          underlayDragState.active = false;
+          underlayDragState.pointerId = null;
+          if (selectedUnderlayBox) {
+            scene.remove(selectedUnderlayBox);
+            selectedUnderlayBox.geometry.dispose();
+            (selectedUnderlayBox.material as THREE.Material).dispose();
+            selectedUnderlayBox = null;
+          }
+          selectedKind = null;
+        }
+        setSelectedWall(null);
+        setSelectedModule(null);
+        setUnderlayStatus("Pinned.");
+      });
+
+      unpinUnderlayBtn.addEventListener("click", () => {
+        ensureLayoutMode();
+        underlayState.pinned = false;
+        setUnderlayStatus("Underlay unpinned.");
       });
 
       calBtn.addEventListener("click", () => {
@@ -2537,6 +2792,7 @@ export function startApp(args: AppArgs) {
         underlayState.scale = 1;
         updateUnderlayTransform();
         setUnderlayStatus("Scale reset.");
+        if (underlayScaleEl) underlayScaleEl.value = "1";
       });
 
       removeBtn.addEventListener("click", () => {
@@ -2697,6 +2953,7 @@ export function startApp(args: AppArgs) {
 
     function setSelectedModule(id: string | null) {
       if (layoutTool !== "wall") layoutTool = "select";
+      if (id && pinnedInstanceIds.has(id)) id = null;
       selectedKind = id ? "module" : null;
       selectedInstanceId = id;
       selectedInstanceIds.clear();
@@ -2704,6 +2961,12 @@ export function startApp(args: AppArgs) {
       selectedWallId = null;
       selectedWallIds.clear();
       setInstanceSelected(id);
+      if (selectedUnderlayBox) {
+        scene.remove(selectedUnderlayBox);
+        selectedUnderlayBox.geometry.dispose();
+        (selectedUnderlayBox.material as THREE.Material).dispose();
+        selectedUnderlayBox = null;
+      }
       mountProps();
     }
 
@@ -2712,17 +2975,57 @@ export function startApp(args: AppArgs) {
     selectedKind = "window";
     selectedWallId = null;
     setInstanceSelected(null);
+    if (selectedUnderlayBox) {
+      scene.remove(selectedUnderlayBox);
+      selectedUnderlayBox.geometry.dispose();
+      (selectedUnderlayBox.material as THREE.Material).dispose();
+      selectedUnderlayBox = null;
+    }
+    mountProps();
+  }
+
+  function setSelectedUnderlay() {
+    if (layoutTool !== "wall") layoutTool = "select";
+    if (!underlayMesh.visible || underlayState.pinned) return;
+    selectedKind = "underlay";
+    selectedWallId = null;
+    selectedWallIds.clear();
+    selectedInstanceId = null;
+    selectedInstanceIds.clear();
+    setInstanceSelected(null);
+    if (selectedWallBox) {
+      scene.remove(selectedWallBox);
+      selectedWallBox.geometry.dispose();
+      (selectedWallBox.material as THREE.Material).dispose();
+      selectedWallBox = null;
+    }
+    if (selectedUnderlayBox) {
+      scene.remove(selectedUnderlayBox);
+      selectedUnderlayBox.geometry.dispose();
+      (selectedUnderlayBox.material as THREE.Material).dispose();
+      selectedUnderlayBox = null;
+    }
+    selectedUnderlayBox = new THREE.BoxHelper(underlayMesh, 0x5c8cff);
+    selectedUnderlayBox.name = "underlaySelectionBox";
+    scene.add(selectedUnderlayBox);
     mountProps();
   }
 
   function setSelectedWall(id: string | null) {
     if (layoutTool !== "wall") layoutTool = "select";
+    if (id && pinnedWallIds.has(id)) id = null;
     selectedKind = id ? "wall" : null;
     selectedWallId = id;
     selectedWallIds.clear();
     if (id) selectedWallIds.add(id);
     setInstanceSelected(null);
     selectedInstanceIds.clear();
+    if (selectedUnderlayBox) {
+      scene.remove(selectedUnderlayBox);
+      selectedUnderlayBox.geometry.dispose();
+      (selectedUnderlayBox.material as THREE.Material).dispose();
+      selectedUnderlayBox = null;
+    }
 
     if (selectedWallBox) {
       scene.remove(selectedWallBox);
@@ -3726,6 +4029,7 @@ export function startApp(args: AppArgs) {
           const factor = desiredM / distM;
           underlayState.scale *= factor;
           updateUnderlayTransform();
+          if (underlayScaleEl) underlayScaleEl.value = String(underlayState.scale);
           setUnderlayStatus(`Kalibrácia OK: ${underlayCal.knownMm} mm`);
         } else {
           setUnderlayStatus("Kalibrácia zlyhala (nulová vzdialenosť).");
@@ -3906,6 +4210,21 @@ export function startApp(args: AppArgs) {
         return;
       }
       if (!id) {
+        if (viewMode === "2d" && layoutTool === "select" && ev.button === 0 && underlayMesh.visible && !underlayState.pinned) {
+          const underlayHit = raycaster.intersectObject(underlayMesh, false)[0];
+          if (underlayHit) {
+            setSelectedUnderlay();
+            const hitPoint = new THREE.Vector3();
+            if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+            underlayDragState.active = true;
+            underlayDragState.pointerId = ev.pointerId;
+            underlayDragState.startWorld.copy(hitPoint);
+            underlayDragState.startOffsetMm = { x: underlayState.offsetMm.x, z: underlayState.offsetMm.z };
+            renderer.domElement.setPointerCapture(ev.pointerId);
+            setUnderlayStatus("Drag underlay... (Pin when ready)");
+            return;
+          }
+        }
         setSelectedWall(null);
         setSelectedModule(null);
         clearWindowLightIfMissing();
@@ -3918,6 +4237,7 @@ export function startApp(args: AppArgs) {
 
       // Disable object dragging in 3D view (layout edits happen in 2D).
       if (viewMode !== "2d") return;
+      if (pinnedInstanceIds.has(id)) return;
 
       const hitPoint = new THREE.Vector3();
       if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
@@ -4057,6 +4377,25 @@ export function startApp(args: AppArgs) {
       marqueeEl.style.top = `${y0}px`;
       marqueeEl.style.width = `${Math.max(0, x1 - x0)}px`;
       marqueeEl.style.height = `${Math.max(0, y1 - y0)}px`;
+    }
+
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && underlayDragState.active && underlayDragState.pointerId === ev.pointerId) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      pointerNdc.set(x, y);
+      raycaster.setFromCamera(pointerNdc, cam());
+      const hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+      const dxMm = Math.round((hitPoint.x - underlayDragState.startWorld.x) * 1000);
+      const dzMm = Math.round((hitPoint.z - underlayDragState.startWorld.z) * 1000);
+      underlayState.offsetMm.x = underlayDragState.startOffsetMm.x + dxMm;
+      underlayState.offsetMm.z = underlayDragState.startOffsetMm.z + dzMm;
+      updateUnderlayTransform();
+      if (underlayOffXEl) underlayOffXEl.value = String(underlayState.offsetMm.x);
+      if (underlayOffZEl) underlayOffZEl.value = String(underlayState.offsetMm.z);
+      if (selectedUnderlayBox) (selectedUnderlayBox as any).update?.();
+      return;
     }
 
     if (mode === "layout" && layoutTool === "wall" && wallDraw.active && wallDraw.a && wallDraw.preview) {
@@ -4236,6 +4575,18 @@ export function startApp(args: AppArgs) {
       return;
     }
 
+    if (underlayDragState.active && underlayDragState.pointerId === ev.pointerId) {
+      underlayDragState.active = false;
+      underlayDragState.pointerId = null;
+      setUnderlayStatus("Underlay moved.");
+      try {
+        renderer.domElement.releasePointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
     if (marquee.active) {
       marquee.active = false;
       marqueeEl.style.display = "none";
@@ -4306,6 +4657,7 @@ export function startApp(args: AppArgs) {
 
         const hitWalls: string[] = [];
         for (const ww of walls) {
+          if (pinnedWallIds.has(ww.id)) continue;
           const b = wallBounds(ww);
           const ok = marquee.mode === "contain" ? contains(b) : overlaps(b);
           if (ok) hitWalls.push(ww.id);
@@ -4313,6 +4665,7 @@ export function startApp(args: AppArgs) {
 
         const hitMods: string[] = [];
         for (const inst of instances) {
+          if (pinnedInstanceIds.has(inst.id)) continue;
           const b = instBounds(inst.id);
           if (!b) continue;
           const ok = marquee.mode === "contain" ? contains(b) : overlaps(b);
