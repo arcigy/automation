@@ -281,9 +281,8 @@ export function createScene(container: HTMLElement) {
   };
 
   // Interior lighting model:
-  // - HDRI used only for reflections + tiny fill (never main daylight)
-  // - Main daylight comes only through windows (RectAreaLight + soft falloff)
-  // - No global studio lights; sealed room stays dark
+  // - Use a simple, always-on "studio" lighting so the scene is readable by default.
+  // - Optional window opening can add extra daylight (but is not required).
   let windowOpening: { center: THREE.Vector3; inwardNormal: THREE.Vector3; width: number; height: number } | null = null;
   let daylightIntensity = 9; // tweak via UI in app
 
@@ -297,6 +296,36 @@ export function createScene(container: HTMLElement) {
   lightProbe.name = "hdriLightProbe";
   lightProbe.intensity = 0;
   scene.add(lightProbe);
+
+  // Default lights (always on)
+  const studioHemi = new THREE.HemisphereLight(0xffffff, 0x1a1f2a, 1.15);
+  studioHemi.name = "studioHemi";
+  scene.add(studioHemi);
+
+  const studioKey = new THREE.DirectionalLight(0xffffff, 2.65);
+  studioKey.name = "studioKey";
+  studioKey.position.set(3.2, 5.2, 2.8);
+  studioKey.castShadow = true;
+  studioKey.shadow.mapSize.set(2048, 2048);
+  studioKey.shadow.bias = -0.00006;
+  studioKey.shadow.normalBias = 0.012;
+  (studioKey.shadow.camera as THREE.OrthographicCamera).near = 0.2;
+  (studioKey.shadow.camera as THREE.OrthographicCamera).far = 30;
+  (studioKey.shadow.camera as THREE.OrthographicCamera).left = -6;
+  (studioKey.shadow.camera as THREE.OrthographicCamera).right = 6;
+  (studioKey.shadow.camera as THREE.OrthographicCamera).top = 6;
+  (studioKey.shadow.camera as THREE.OrthographicCamera).bottom = -6;
+  scene.add(studioKey);
+  scene.add(studioKey.target);
+  studioKey.target.position.set(0, 0.9, 0);
+
+  const studioFill = new THREE.DirectionalLight(0xdbe6ff, 0.55);
+  studioFill.name = "studioFill";
+  studioFill.position.set(-2.8, 3.8, -3.4);
+  studioFill.castShadow = false;
+  scene.add(studioFill);
+  scene.add(studioFill.target);
+  studioFill.target.position.set(0, 0.7, 0);
 
   const windowRect = new THREE.RectAreaLight(0xdbe6ff, 0, 1, 1);
   windowRect.name = "windowRect";
@@ -339,10 +368,14 @@ export function createScene(container: HTMLElement) {
       windowShadow.shadow.bias = 0;
       windowShadow.shadow.normalBias = 0.01;
       windowShadow.shadow.radius = 0;
+      studioKey.shadow.bias = 0;
+      studioKey.shadow.normalBias = 0.008;
     } else {
       windowShadow.shadow.bias = -0.00008;
       windowShadow.shadow.normalBias = 0.015;
       windowShadow.shadow.radius = 6;
+      studioKey.shadow.bias = -0.00006;
+      studioKey.shadow.normalBias = 0.012;
     }
   };
   applyShadowAlgorithm("pcfsoft");
@@ -474,17 +507,17 @@ export function createScene(container: HTMLElement) {
     const envStrength = hdriEnv ? Math.max(0, Math.min(0.3, hdriEnvIntensity)) : 0;
 
     if (!windowOpening) {
-      // Sealed room: dark, but not pure black.
-      skyBias.intensity = 0;
-      lightProbe.intensity = envStrength * 0.03;
+      // Default: readable studio lighting with optional weak HDRI fill.
+      skyBias.intensity = 0.1;
+      lightProbe.intensity = envStrength * 0.18;
       windowRect.intensity = 0;
       windowFill.intensity = 0;
       windowShadow.intensity = 0;
-      bounceCeilingNear.intensity = 0.00012;
-      bounceCeilingFar.intensity = 0.00006;
-      bounceFloorNear.intensity = 0.00007;
-      bounceOppositeWall.intensity = 0.00018;
-      setSceneEnvIntensity(envStrength * 0.05); // reflections only
+      bounceCeilingNear.intensity = 0;
+      bounceCeilingFar.intensity = 0;
+      bounceFloorNear.intensity = 0;
+      bounceOppositeWall.intensity = 0;
+      setSceneEnvIntensity(envStrength * 0.35);
       return;
     }
 
@@ -503,14 +536,14 @@ export function createScene(container: HTMLElement) {
     setSceneEnvIntensity(envStrength * (0.06 + 0.06 * portal));
     lightProbe.intensity = envStrength * 0.10 * portal;
 
-    // Main soft daylight at the opening.
+    // Optional daylight at the opening (kept modest; studio lights are always on).
     windowRect.position.copy(emit);
     windowRect.width = w;
     windowRect.height = h;
     windowRect.lookAt(inside);
     // Keep intensity stable across window sizes.
     const base = Math.max(0, Math.min(25, daylightIntensity));
-    windowRect.intensity = 28 * base;
+    windowRect.intensity = 2.8 * base;
 
     // Gradient / falloff into room (very wide, penumbra=1, decay=2).
     windowFill.position.copy(emit);
@@ -518,7 +551,7 @@ export function createScene(container: HTMLElement) {
     windowFill.distance = 18;
     windowFill.decay = 2;
     windowFill.angle = Math.min(1.1, Math.max(0.55, Math.atan2(Math.max(w, h) * 1.2, 2.6)));
-    windowFill.intensity = windowRect.intensity * 0.075;
+    windowFill.intensity = windowRect.intensity * 0.05;
 
     // Shadow-only light: low intensity, wide + soft.
     windowShadow.position.copy(emit);
@@ -526,17 +559,17 @@ export function createScene(container: HTMLElement) {
     windowShadow.distance = 18;
     windowShadow.decay = 2;
     windowShadow.angle = Math.min(1.05, Math.max(0.45, Math.atan2(Math.max(w, h) * 1.25, 3.1)));
-    windowShadow.intensity = windowRect.intensity * 0.026;
+    windowShadow.intensity = windowRect.intensity * 0.02;
 
     // Gentle sky bias from above, no hard shadows.
-    skyBias.intensity = windowRect.intensity * 0.0032;
+    skyBias.intensity = Math.min(0.35, windowRect.intensity * 0.0032);
 
     // Bounce: large soft sources to avoid hotspot patches.
     const nearBoost = 0.55 + 0.45 * portal;
-    bounceCeilingNear.intensity = windowRect.intensity * 0.006 * portal * nearBoost;
-    bounceFloorNear.intensity = windowRect.intensity * 0.0035 * portal * nearBoost;
-    bounceCeilingFar.intensity = windowRect.intensity * 0.0026 * portal;
-    bounceOppositeWall.intensity = windowRect.intensity * 0.0039 * portal;
+    bounceCeilingNear.intensity = windowRect.intensity * 0.0012 * portal * nearBoost;
+    bounceFloorNear.intensity = windowRect.intensity * 0.0008 * portal * nearBoost;
+    bounceCeilingFar.intensity = windowRect.intensity * 0.0006 * portal;
+    bounceOppositeWall.intensity = windowRect.intensity * 0.0009 * portal;
 
     // Shift "near" bounces toward the window side so the room keeps a natural gradient.
     const shift = n.clone().multiplyScalar(1.35);
