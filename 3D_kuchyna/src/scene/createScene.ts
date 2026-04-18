@@ -44,15 +44,21 @@ export function createScene(container: HTMLElement) {
 
   let activeCamera: THREE.Camera = camera3d;
   let controls = new OrbitControls(activeCamera, renderer.domElement);
+  const savedView = {
+    target3d: new THREE.Vector3(0, 0.6, 0),
+    cam3dPos: camera3d.position.clone(),
+    target2d: new THREE.Vector3(0, 0, 0),
+    zoom2d: camera2d.zoom
+  };
   const configureControls = (mode: "3d" | "2d") => {
     controls.enableDamping = mode === "3d";
     controls.dampingFactor = 0.08;
     controls.screenSpacePanning = true;
+    (controls as any).zoomToCursor = true;
 
     if (mode === "2d") {
       controls.enableRotate = false;
       controls.enableZoom = true;
-      controls.target.set(0, 0, 0);
       controls.enablePan = true;
       (controls as any).mouseButtons = {
         LEFT: THREE.MOUSE.ROTATE, // no-op in 2D (rotate disabled) => free for marquee/select
@@ -73,6 +79,8 @@ export function createScene(container: HTMLElement) {
     controls.update();
   };
   configureControls("3d");
+  controls.target.copy(savedView.target3d);
+  controls.update();
 
   // Base room (disabled; we render on empty background)
   const room = new THREE.Group();
@@ -599,6 +607,19 @@ export function createScene(container: HTMLElement) {
   setSize(container.clientWidth, container.clientHeight);
 
   const setViewMode = (mode: "3d" | "2d") => {
+    const prevTarget = controls.target.clone();
+    const prevWas2d = activeCamera === camera2d;
+    if (prevWas2d) {
+      savedView.target2d.copy(prevTarget);
+      savedView.zoom2d = camera2d.zoom;
+    } else {
+      savedView.target3d.copy(prevTarget);
+      savedView.cam3dPos.copy(camera3d.position);
+      if (mode === "2d") {
+        savedView.target2d.set(prevTarget.x, 0, prevTarget.z);
+      }
+    }
+
     controls.dispose();
 
     activeCamera = mode === "2d" ? camera2d : camera3d;
@@ -608,6 +629,8 @@ export function createScene(container: HTMLElement) {
     if (mode === "2d") {
       // Hard-lock the camera to true top-down orthographic (no perspective, no tilt).
       camera2d.up.set(0, 0, -1);
+      controls.target.copy(savedView.target2d);
+      camera2d.zoom = savedView.zoom2d;
       camera2d.position.set(controls.target.x, 10, controls.target.z);
       camera2d.lookAt(controls.target.x, 0, controls.target.z);
       camera2d.updateProjectionMatrix();
@@ -622,6 +645,9 @@ export function createScene(container: HTMLElement) {
       room.visible = false;
       planOverlay.visible = false;
       planAmbient.visible = false;
+      controls.target.copy(savedView.target3d);
+      camera3d.position.copy(savedView.cam3dPos);
+      camera3d.updateProjectionMatrix();
       scene.background = new THREE.Color(0x0a0c10);
       renderer.setClearColor(0x0a0c10, 1);
       updateLighting();

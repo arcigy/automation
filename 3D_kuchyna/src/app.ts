@@ -1051,8 +1051,12 @@ export function startApp(args: AppArgs) {
     }
     wallDraw.chainStart = null;
     wallDraw.segments = 0;
-    view2d.checked = true;
-    setView2d(true);
+    if (viewMode !== "2d") {
+      view2d.checked = true;
+      setView2d(true);
+    } else {
+      view2d.checked = true;
+    }
     selectedKind = null;
     selectedWallId = null;
     setInstanceSelected(null);
@@ -2607,51 +2611,14 @@ export function startApp(args: AppArgs) {
     title: "Select",
     iconSvg: I_SELECT,
     onClick: () => {
-      ensureLayoutMode();
-      layoutTool = "select";
-      wallDraw.active = false;
-      wallDraw.a = null;
-      wallDraw.chainStart = null;
-      wallDraw.segments = 0;
-      if (wallDraw.preview) {
-        layoutRoot.remove(wallDraw.preview);
-        wallDraw.preview.geometry.dispose();
-        (wallDraw.preview.material as THREE.Material).dispose();
-        wallDraw.preview = null;
-      }
-      wallSnapHud.style.display = "none";
-      setUnderlayStatus("");
-      mountProps();
+      setToolSelect();
     }
   });
   tb.toolButton(g1, {
     title: "Wall",
     iconSvg: I_WALL,
     onClick: () => {
-      ensureLayoutMode();
-      layoutTool = "wall";
-      wallDraw.active = false;
-      wallDraw.a = null;
-      if (wallDraw.preview) {
-        layoutRoot.remove(wallDraw.preview);
-        wallDraw.preview.geometry.dispose();
-        (wallDraw.preview.material as THREE.Material).dispose();
-        wallDraw.preview = null;
-      }
-      wallDraw.chainStart = null;
-      wallDraw.segments = 0;
-      view2d.checked = true;
-      setView2d(true);
-      selectedKind = null;
-      selectedWallId = null;
-      setInstanceSelected(null);
-      if (selectedWallBox) {
-        scene.remove(selectedWallBox);
-        selectedWallBox.geometry.dispose();
-        (selectedWallBox.material as THREE.Material).dispose();
-        selectedWallBox = null;
-      }
-      mountProps();
+      setToolWall();
     }
   });
   tb.toolButton(g1, {
@@ -4239,6 +4206,7 @@ export function startApp(args: AppArgs) {
       }
 
       if (layoutTool === "wall") {
+        if (ev.button !== 0) return;
         // Place wall by 2 clicks on ground (XZ).
         const hitPoint = new THREE.Vector3();
         if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
