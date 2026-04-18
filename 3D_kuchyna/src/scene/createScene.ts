@@ -18,7 +18,15 @@ export function createScene(container: HTMLElement) {
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = true;
-  container.appendChild(renderer.domElement);
+  // The viewer container also contains DOM UI (reset button + HUD overlays). Make the canvas
+  // fill the container without affecting layout, so screen-space HUD coordinates align 1:1.
+  if (!container.style.position) container.style.position = "relative";
+  renderer.domElement.style.position = "absolute";
+  renderer.domElement.style.inset = "0";
+  renderer.domElement.style.width = "100%";
+  renderer.domElement.style.height = "100%";
+  renderer.domElement.style.display = "block";
+  container.prepend(renderer.domElement);
 
   const pmrem = new THREE.PMREMGenerator(renderer);
   pmrem.compileEquirectangularShader();
@@ -37,23 +45,36 @@ export function createScene(container: HTMLElement) {
   let activeCamera: THREE.Camera = camera3d;
   let controls = new OrbitControls(activeCamera, renderer.domElement);
   const configureControls = (mode: "3d" | "2d") => {
-    controls.enableDamping = true;
+    controls.enableDamping = mode === "3d";
     controls.dampingFactor = 0.08;
     controls.screenSpacePanning = true;
 
     if (mode === "2d") {
       controls.enableRotate = false;
+      controls.enableZoom = true;
       controls.target.set(0, 0, 0);
+      controls.enablePan = true;
+      (controls as any).mouseButtons = {
+        LEFT: THREE.MOUSE.ROTATE, // no-op in 2D (rotate disabled) => free for marquee/select
+        MIDDLE: THREE.MOUSE.PAN,
+        RIGHT: THREE.MOUSE.ROTATE // keep free (we use right-drag for marquee)
+      };
     } else {
       controls.enableRotate = true;
       controls.target.set(0, 0.6, 0);
+      controls.enablePan = true;
+      (controls as any).mouseButtons = {
+        LEFT: THREE.MOUSE.ROTATE,
+        MIDDLE: THREE.MOUSE.PAN,
+        RIGHT: THREE.MOUSE.PAN
+      };
     }
 
     controls.update();
   };
   configureControls("3d");
 
-  // White room (simple studio box)
+  // Base room (disabled; we render on empty background)
   const room = new THREE.Group();
   room.name = "studioRoom";
 
@@ -134,7 +155,60 @@ export function createScene(container: HTMLElement) {
   ceiling.receiveShadow = true;
   room.add(ceiling);
 
-  scene.add(room);
+  // Intentionally not added to the scene (user wants no default room).
+  // scene.add(room);
+
+  // 2D plan overlay (Revit-like)
+  const planOverlay = new THREE.Group();
+  planOverlay.name = "planOverlay";
+  planOverlay.visible = false;
+  scene.add(planOverlay);
+
+  const planBg = new THREE.Mesh(
+    new THREE.PlaneGeometry(200, 200),
+    new THREE.MeshBasicMaterial({ color: 0x0f1218, transparent: true, opacity: 0, depthWrite: false })
+  );
+  planBg.name = "planBg";
+  planBg.rotation.x = -Math.PI / 2;
+  planBg.position.y = 0.001;
+  planBg.renderOrder = 0;
+  planOverlay.add(planBg);
+
+  // Large plan grid so it is visible everywhere you pan/zoom in 2D.
+  const planGrid = new THREE.GridHelper(200, 2000, 0x2b3243, 0x1b202c);
+  planGrid.name = "planGrid";
+  planGrid.renderOrder = 2;
+  const planGridMats = Array.isArray(planGrid.material) ? planGrid.material : [planGrid.material];
+  for (const m of planGridMats) {
+    m.transparent = true;
+    m.opacity = 0.75;
+    m.depthWrite = false;
+  }
+  planGrid.position.y = 0.002;
+  planOverlay.add(planGrid);
+
+  const planBounds = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.PlaneGeometry(roomW, roomD)),
+    new THREE.LineBasicMaterial({ color: 0x7a8499, transparent: true, opacity: 0.9 })
+  );
+  planBounds.name = "planBounds";
+  planBounds.rotation.x = -Math.PI / 2;
+  planBounds.position.y = 0.003;
+  planOverlay.add(planBounds);
+
+  const planOrigin = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.15, 0.15),
+    new THREE.MeshBasicMaterial({ color: 0xffd166, depthWrite: false })
+  );
+  planOrigin.name = "planOrigin";
+  planOrigin.rotation.x = -Math.PI / 2;
+  planOrigin.position.y = 0.004;
+  planOverlay.add(planOrigin);
+
+  const planAmbient = new THREE.AmbientLight(0xffffff, 1.25);
+  planAmbient.name = "planAmbient";
+  scene.add(planAmbient);
+  planAmbient.visible = false;
 
   type WindowCutout = { wall: "back" | "left" | "right"; centerAxisM: number; sillM: number; widthM: number; heightM: number } | null;
   let cutout: WindowCutout = null;
@@ -530,6 +604,28 @@ export function createScene(container: HTMLElement) {
     activeCamera = mode === "2d" ? camera2d : camera3d;
     controls = new OrbitControls(activeCamera, renderer.domElement);
     configureControls(mode);
+
+    if (mode === "2d") {
+      // Hard-lock the camera to true top-down orthographic (no perspective, no tilt).
+      camera2d.up.set(0, 0, -1);
+      camera2d.position.set(controls.target.x, 10, controls.target.z);
+      camera2d.lookAt(controls.target.x, 0, controls.target.z);
+      camera2d.updateProjectionMatrix();
+
+      // Make plan readable: hide room materials + enable simple lighting + grid.
+      room.visible = false;
+      planOverlay.visible = true;
+      planAmbient.visible = true;
+      scene.background = new THREE.Color(0x0f1218);
+      renderer.setClearColor(0x0f1218, 1);
+    } else {
+      room.visible = false;
+      planOverlay.visible = false;
+      planAmbient.visible = false;
+      scene.background = new THREE.Color(0x0a0c10);
+      renderer.setClearColor(0x0a0c10, 1);
+      updateLighting();
+    }
   };
 
   return {

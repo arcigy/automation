@@ -131,7 +131,7 @@ export function startApp(args: AppArgs) {
   underlayMesh.rotation.x = -Math.PI / 2;
   underlayMesh.position.y = 0.006;
   underlayMesh.visible = false;
-  underlayMesh.renderOrder = -10;
+  underlayMesh.renderOrder = 1;
   layoutRoot.add(underlayMesh);
 
   const underlayState = {
@@ -2445,6 +2445,11 @@ export function startApp(args: AppArgs) {
       actions.className = "actions";
       panelEl.appendChild(actions);
 
+      const confirmBtn = document.createElement("button");
+      confirmBtn.type = "button";
+      confirmBtn.textContent = "Confirm";
+      actions.appendChild(confirmBtn);
+
       const calBtn = document.createElement("button");
       calBtn.type = "button";
       calBtn.textContent = "Calibrate";
@@ -2493,24 +2498,26 @@ export function startApp(args: AppArgs) {
         }
       });
 
-      opacity.addEventListener("input", () => {
+      const setPending = () => setUnderlayStatus("Pending changes (Confirm).");
+
+      opacity.addEventListener("input", setPending);
+      rot.addEventListener("input", setPending);
+      offX.addEventListener("input", setPending);
+      offZ.addEventListener("input", setPending);
+
+      confirmBtn.addEventListener("click", () => {
+        ensureLayoutMode();
+        if (!underlayMesh.visible) {
+          setUnderlayStatus("Upload underlay first.");
+          return;
+        }
+
         underlayState.opacity = Math.min(1, Math.max(0, Number(opacity.value) || 0));
-        updateUnderlayTransform();
-      });
-
-      rot.addEventListener("change", () => {
         underlayState.rotationDeg = Number(rot.value) || 0;
-        updateUnderlayTransform();
-      });
-
-      offX.addEventListener("change", () => {
         underlayState.offsetMm.x = Number(offX.value) || 0;
-        updateUnderlayTransform();
-      });
-
-      offZ.addEventListener("change", () => {
         underlayState.offsetMm.z = Number(offZ.value) || 0;
         updateUnderlayTransform();
+        setUnderlayStatus("Confirmed.");
       });
 
       calBtn.addEventListener("click", () => {
