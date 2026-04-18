@@ -83,6 +83,7 @@ export function startApp(args: AppArgs) {
   let lastCameraProj = new Float32Array(16);
   let lastDimZoom = -1;
   let lastDimRectW = -1;
+  let lastDimRectH = -1;
 
   const copyM16 = (out: Float32Array, m: THREE.Matrix4) => {
     const e = m.elements;
@@ -608,6 +609,29 @@ export function startApp(args: AppArgs) {
     mesh.visible = true;
   };
 
+  const orthoWorldPerPx = (rect: DOMRect) => {
+    const c = cam();
+    if (!(c instanceof THREE.OrthographicCamera)) return null as number | null;
+    const visibleW = Math.abs(c.right - c.left) / Math.max(1e-6, c.zoom);
+    const visibleH = Math.abs(c.top - c.bottom) / Math.max(1e-6, c.zoom);
+    const wpX = visibleW / Math.max(1, rect.width);
+    const wpY = visibleH / Math.max(1, rect.height);
+    return Math.min(wpX, wpY);
+  };
+
+  const setSpriteScreenFixedScale = (spr: THREE.Sprite, rect: DOMRect) => {
+    const wpp = orthoWorldPerPx(rect);
+    if (!wpp) return;
+    const wPx = Number((spr.userData as any).wPx ?? 60);
+    const hPx = Number((spr.userData as any).hPx ?? 28);
+    spr.scale.set(wpp * wPx, wpp * hPx, 1);
+  };
+
+  const updateDimensionTextScale = (rect: DOMRect) => {
+    for (const d of dimensions) setSpriteScreenFixedScale(d.text, rect);
+    if (dimPreview.root.visible) setSpriteScreenFixedScale(dimPreview.text, rect);
+  };
+
   const wallLineSegment = (wallId: string, wallLine: AlignWallLine) => {
     const w = walls.find((x) => x.id === wallId) ?? null;
     if (!w) return null as null | { a: THREE.Vector3; b: THREE.Vector3; dir: THREE.Vector3 };
@@ -686,17 +710,7 @@ export function startApp(args: AppArgs) {
     d.text.position.set(mid.x, 0.06, mid.z);
     const mm = Math.round(Math.abs(n.dot(bPt.clone().sub(aPt))) * 1000);
     updateSpriteText(d.text, `${mm}`);
-
-    if (rect) {
-      const c = cam();
-      if (c instanceof THREE.OrthographicCamera) {
-        const visibleW = Math.abs(c.right - c.left) / Math.max(1e-6, c.zoom);
-        const worldPerPx = visibleW / Math.max(1, rect.width);
-        const wPx = Number((d.text.userData as any).wPx ?? 60);
-        const hPx = Number((d.text.userData as any).hPx ?? 28);
-        d.text.scale.set(worldPerPx * wPx, worldPerPx * hPx, 1);
-      }
-    }
+    if (rect) setSpriteScreenFixedScale(d.text, rect);
 
     const angle = Math.atan2(bDim.z - aDim.z, bDim.x - aDim.x);
     const pickLen = Math.max(0.01, aDim.distanceTo(bDim));
@@ -711,6 +725,7 @@ export function startApp(args: AppArgs) {
 
   const updateAllDimensions = (rect: DOMRect | null = null) => {
     for (const d of dimensions) updateDimensionGeometry(d, rect);
+    if (rect) updateDimensionTextScale(rect);
     updateDimensionSelectionHighlights();
   };
 
@@ -6525,14 +6540,7 @@ export function startApp(args: AppArgs) {
             dimPreview.text.position.set(mid.x, 0.06, mid.z);
             const mm = Math.round(Math.abs(n.dot(bPt.clone().sub(aPt))) * 1000);
             updateSpriteText(dimPreview.text, `${mm}`);
-            const c = cam();
-            if (c instanceof THREE.OrthographicCamera) {
-              const visibleW = Math.abs(c.right - c.left) / Math.max(1e-6, c.zoom);
-              const worldPerPx = visibleW / Math.max(1, rect.width);
-              const wPx = Number((dimPreview.text.userData as any).wPx ?? 60);
-              const hPx = Number((dimPreview.text.userData as any).hPx ?? 28);
-              dimPreview.text.scale.set(worldPerPx * wPx, worldPerPx * hPx, 1);
-            }
+            setSpriteScreenFixedScale(dimPreview.text, rect);
             dimPreview.root.visible = true;
           } else {
             dimPreview.root.visible = false;
@@ -7223,10 +7231,12 @@ export function startApp(args: AppArgs) {
     const activeCam = cam();
     if (mode === "layout" && viewMode === "2d" && dimensions.length > 0 && activeCam instanceof THREE.OrthographicCamera) {
       const rect = renderer.domElement.getBoundingClientRect();
-      if (Math.abs(activeCam.zoom - lastDimZoom) > 1e-4 || rect.width !== lastDimRectW) {
+      if (Math.abs(activeCam.zoom - lastDimZoom) > 1e-4 || rect.width !== lastDimRectW || rect.height !== lastDimRectH) {
         lastDimZoom = activeCam.zoom;
         lastDimRectW = rect.width;
-        updateAllDimensions(rect);
+        lastDimRectH = rect.height;
+        // Only text scale needs to be perfectly screen-fixed on zoom; geometry can stay as-is.
+        updateDimensionTextScale(rect);
       }
     }
     const isPhoto = renderMode === "photo_pathtrace" && ENABLE_PHOTO && activeCam instanceof THREE.PerspectiveCamera;
