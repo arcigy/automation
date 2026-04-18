@@ -500,6 +500,160 @@ export function startApp(args: AppArgs) {
     exteriorSign: 1 as 1 | -1
   };
 
+  type LayoutSnapshot = {
+    wallCounter: number;
+    walls: Array<{ id: string; params: WallParams }>;
+    pinnedWallIds: string[];
+    pinnedInstanceIds: string[];
+    underlayPinned: boolean;
+    selected: {
+      kind: typeof selectedKind;
+      wallId: string | null;
+      wallIds: string[];
+      instId: string | null;
+      instIds: string[];
+    };
+  };
+
+  const history = {
+    past: [] as LayoutSnapshot[],
+    future: [] as LayoutSnapshot[],
+    current: null as LayoutSnapshot | null,
+    max: 80
+  };
+
+  const snapshotSignature = (s: LayoutSnapshot) => {
+    // Compact-ish signature to skip duplicates
+    const w = s.walls
+      .map((x) => `${x.id}:${x.params.aMm.x},${x.params.aMm.z}-${x.params.bMm.x},${x.params.bMm.z}:${x.params.thicknessMm}:${(x.params as any).justification ?? "center"}:${x.params.exteriorSign ?? 1}`)
+      .join("|");
+    const pins = `${s.pinnedWallIds.slice().sort().join(",")}#${s.pinnedInstanceIds.slice().sort().join(",")}#${s.underlayPinned ? 1 : 0}`;
+    return `${s.wallCounter}::${pins}::${w}`;
+  };
+
+  let undoBtnEl: HTMLButtonElement | null = null;
+  let redoBtnEl: HTMLButtonElement | null = null;
+  const updateUndoRedoUi = () => {
+    if (undoBtnEl) undoBtnEl.disabled = history.past.length === 0;
+    if (redoBtnEl) redoBtnEl.disabled = history.future.length === 0;
+  };
+
+  const captureLayoutSnapshot = (): LayoutSnapshot => {
+    const copyParams = (p: WallParams) => JSON.parse(JSON.stringify(p)) as WallParams;
+    return {
+      wallCounter,
+      walls: walls.map((w) => ({ id: w.id, params: copyParams(w.params) })),
+      pinnedWallIds: Array.from(pinnedWallIds),
+      pinnedInstanceIds: Array.from(pinnedInstanceIds),
+      underlayPinned: !!underlayState?.pinned,
+      selected: {
+        kind: selectedKind,
+        wallId: selectedWallId,
+        wallIds: Array.from(selectedWallIds),
+        instId: selectedInstanceId,
+        instIds: Array.from(selectedInstanceIds)
+      }
+    };
+  };
+
+  const restoreLayoutSnapshot = (snap: LayoutSnapshot) => {
+    // Clear selection visuals first
+    setSelectedWall(null);
+    setSelectedModule(null);
+    selectedWallIds.clear();
+    selectedInstanceIds.clear();
+    updateSelectionHighlights();
+
+    // Clear wall roots
+    for (const w of walls.splice(0, walls.length)) {
+      layoutRoot.remove(w.root);
+      disposeObject3D(w.root);
+    }
+
+    wallCounter = snap.wallCounter;
+
+    pinnedWallIds.clear();
+    for (const id of snap.pinnedWallIds) pinnedWallIds.add(id);
+    pinnedInstanceIds.clear();
+    for (const id of snap.pinnedInstanceIds) pinnedInstanceIds.add(id);
+    underlayState.pinned = !!snap.underlayPinned;
+
+    for (const w of snap.walls) {
+      const id = w.id;
+      const root = new THREE.Group();
+      root.name = `wall_${id}`;
+      const refA = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+      const refB = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+      const mesh = createWallMesh(refA, refB, w.params.thicknessMm);
+      mesh.name = `wallMesh_${id}`;
+      mesh.userData.kind = "wall";
+      mesh.userData.wallId = id;
+      root.add(mesh);
+      const inst: WallInstance = { id, params: JSON.parse(JSON.stringify(w.params)) as WallParams, root, mesh };
+      layoutRoot.add(root);
+      walls.push(inst);
+      rebuildWall(inst);
+    }
+
+    rebuildWallPlanMesh();
+    clearToolHud();
+
+    // Restore selection (best-effort)
+    for (const id of snap.selected.wallIds) if (walls.some((w) => w.id === id)) selectedWallIds.add(id);
+    for (const id of snap.selected.instIds) selectedInstanceIds.add(id);
+    if (snap.selected.kind === "wall" && snap.selected.wallId && walls.some((w) => w.id === snap.selected.wallId)) {
+      setSelectedWall(snap.selected.wallId);
+    } else if (snap.selected.kind === "module" && snap.selected.instId) {
+      setSelectedModule(snap.selected.instId);
+    } else {
+      setSelectedWall(null);
+      setSelectedModule(null);
+    }
+    updateSelectionHighlights();
+    mountProps();
+  };
+
+  const commitHistory = () => {
+    if (mode !== "layout") return;
+    if (viewMode !== "2d" && viewMode !== "3d") return;
+    const next = captureLayoutSnapshot();
+    if (!history.current) {
+      history.current = next;
+      history.past = [];
+      history.future = [];
+      updateUndoRedoUi();
+      return;
+    }
+    const a = snapshotSignature(history.current);
+    const b = snapshotSignature(next);
+    if (a === b) return;
+    history.past.push(history.current);
+    if (history.past.length > history.max) history.past.splice(0, history.past.length - history.max);
+    history.current = next;
+    history.future = [];
+    updateUndoRedoUi();
+  };
+
+  const undo = () => {
+    if (!history.current) return;
+    const prev = history.past.pop() ?? null;
+    if (!prev) return;
+    history.future.push(history.current);
+    history.current = prev;
+    restoreLayoutSnapshot(prev);
+    updateUndoRedoUi();
+  };
+
+  const redo = () => {
+    if (!history.current) return;
+    const next = history.future.pop() ?? null;
+    if (!next) return;
+    history.past.push(history.current);
+    history.current = next;
+    restoreLayoutSnapshot(next);
+    updateUndoRedoUi();
+  };
+
   const wallDraw = {
     active: false,
     a: null as THREE.Vector3 | null,
@@ -1411,6 +1565,7 @@ export function startApp(args: AppArgs) {
     walls.push(inst);
     rebuildWall(inst);
     rebuildWallPlanMesh();
+    commitHistory();
     return inst;
   }
 
@@ -1615,6 +1770,21 @@ export function startApp(args: AppArgs) {
     if (isTypingTarget(ev.target)) return;
 
     if (mode === "layout") {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey) {
+        const k = ev.key;
+        if (k === "z" || k === "Z") {
+          if (ev.shiftKey) redo();
+          else undo();
+          ev.preventDefault();
+          return;
+        }
+        if (k === "y" || k === "Y") {
+          redo();
+          ev.preventDefault();
+          return;
+        }
+      }
+
       const nudgeStepM = () => {
         if (viewMode !== "2d") return 0;
         const c = cam();
@@ -1715,6 +1885,7 @@ export function startApp(args: AppArgs) {
 
         if (moved) {
           mountProps();
+          commitHistory();
         }
         return moved;
       };
@@ -3045,6 +3216,8 @@ export function startApp(args: AppArgs) {
   const I_DEBUG = icon("M4 12h16v2H4v-2zm7-8h2v16h-2V4z");
   const I_ALIGN = icon("M4 7h12v2H4V7zm0 8h12v2H4v-2zM18 6l4 3-4 3V6zm0 6l4 3-4 3v-6z");
   const I_TRIM = icon("M4 7h11v2H4V7zm0 8h8v2H4v-2zM18 5l4 4-2 2-4-4 2-2zm-4 4l4 4-2 2-4-4 2-2z");
+  const I_UNDO = icon("M12 5H7.8l1.6-1.6L8 2 4 6l4 4 1.4-1.4L7.8 7H12c3.3 0 6 2.7 6 6 0 1.1-.3 2.1-.8 3l1.7 1c.7-1.2 1.1-2.6 1.1-4 0-4.4-3.6-8-8-8z");
+  const I_REDO = icon("M12 5c-4.4 0-8 3.6-8 8 0 1.4.4 2.8 1.1 4l1.7-1c-.5-.9-.8-1.9-.8-3 0-3.3 2.7-6 6-6h4.2l-1.6 1.6L16 10l4-4-4-4-1.4 1.4L16.2 5H12z");
 
   const tb = createTopbar(args.ribbonEl);
 
@@ -3312,6 +3485,22 @@ export function startApp(args: AppArgs) {
   tb.toolButton(g1, { title: "Door (TODO)", iconSvg: I_DOOR, onClick: () => ensureLayoutMode() });
 
   const gEdit = tb.addGroup("Edit");
+  undoBtnEl = tb.toolButton(gEdit, {
+    title: "Undo (Ctrl+Z)",
+    iconSvg: I_UNDO,
+    onClick: () => {
+      ensureLayoutMode();
+      undo();
+    }
+  });
+  redoBtnEl = tb.toolButton(gEdit, {
+    title: "Redo (Ctrl+Y / Ctrl+Shift+Z)",
+    iconSvg: I_REDO,
+    onClick: () => {
+      ensureLayoutMode();
+      redo();
+    }
+  });
   tb.toolButton(gEdit, {
     title: "Align (A)",
     iconSvg: I_ALIGN,
@@ -3874,10 +4063,10 @@ export function startApp(args: AppArgs) {
     mountProps();
   }
 
-    function deleteWall(id: string) {
-      const idx = walls.findIndex((x) => x.id === id);
-      if (idx < 0) return;
-      const w = walls[idx];
+  function deleteWall(id: string) {
+    const idx = walls.findIndex((x) => x.id === id);
+    if (idx < 0) return;
+    const w = walls[idx];
     removeWall(w);
 
     if (selectedWallId === id) {
@@ -3886,6 +4075,7 @@ export function startApp(args: AppArgs) {
 
     // keep properties in sync
     mountProps();
+    commitHistory();
   }
 
   function createWindow(defaultWall: WallId = "back") {
@@ -4961,6 +5151,7 @@ export function startApp(args: AppArgs) {
         } else {
           translateWallAndConnected(w, dxMm, dzMm);
         }
+        commitHistory();
 
         alignState.lastA = ref;
         alignState.lastB = picked;
@@ -5051,6 +5242,7 @@ export function startApp(args: AppArgs) {
 
             if (dx1 !== 0 || dz1 !== 0) moveWallEndpointAndConnected(w, end1, dx1, dz1);
             if (dx2 !== 0 || dz2 !== 0) moveWallEndpointAndConnected(w2, end2, dx2, dz2);
+            commitHistory();
 
             trimState.lastTarget = trimState.targetPick;
             trimState.lastCutter = picked;
@@ -5122,6 +5314,7 @@ export function startApp(args: AppArgs) {
         }
 
         moveWallEndpointAndConnected(w, moveWhich, dxMm, dzMm);
+        commitHistory();
 
         trimState.lastTarget = trimState.targetPick ?? picked;
         trimState.lastCutter = picked;
@@ -5834,6 +6027,7 @@ export function startApp(args: AppArgs) {
       }
       rebuildWallPlanMesh();
       mountProps();
+      commitHistory();
       try {
         renderer.domElement.releasePointerCapture(ev.pointerId);
       } catch {
@@ -5846,6 +6040,7 @@ export function startApp(args: AppArgs) {
       underlayDragState.active = false;
       underlayDragState.pointerId = null;
       setUnderlayStatus("Underlay moved.");
+      commitHistory();
       try {
         renderer.domElement.releasePointerCapture(ev.pointerId);
       } catch {
@@ -6024,6 +6219,10 @@ export function startApp(args: AppArgs) {
 
   modeSelect.value = "layout";
   setMode("layout");
+  history.current = captureLayoutSnapshot();
+  history.past = [];
+  history.future = [];
+  updateUndoRedoUi();
 
   const navForward = new THREE.Vector3();
   const navRight = new THREE.Vector3();
