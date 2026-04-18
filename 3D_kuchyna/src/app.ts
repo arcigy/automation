@@ -609,11 +609,9 @@ export function startApp(args: AppArgs) {
   const orthoWorldPerPx = (rect: DOMRect) => {
     const c = cam();
     if (!(c instanceof THREE.OrthographicCamera)) return null as number | null;
-    const visibleW = Math.abs(c.right - c.left) / Math.max(1e-6, c.zoom);
-    const visibleH = Math.abs(c.top - c.bottom) / Math.max(1e-6, c.zoom);
-    const wpX = visibleW / Math.max(1, rect.width);
-    const wpY = visibleH / Math.max(1, rect.height);
-    return Math.min(wpX, wpY);
+    const visibleHeight = Math.abs(c.top - c.bottom) / Math.max(1e-6, c.zoom);
+    const worldPerPixel = visibleHeight / Math.max(1, rect.height);
+    return worldPerPixel;
   };
 
   const setSpriteScreenFixedScale = (spr: THREE.Sprite, rect: DOMRect) => {
