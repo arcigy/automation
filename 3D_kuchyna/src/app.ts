@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import polygonClipping from "polygon-clipping";
 import type { ModuleParams } from "./model/cabinetTypes";
 import { makeDefaultCornerShelfLowerParams, makeDefaultDrawerLowParams, makeDefaultShelvesParams, validateModule } from "./model/cabinetTypes";
 import { buildModule } from "./geometry/buildModule";
@@ -12,9 +13,14 @@ import { createCornerShelfLowerControls } from "./ui/createCornerShelfLowerContr
 import { createSsgiPipeline, type SsgiPipeline } from "./rendering/ssgiPipeline";
 import { createPhotoPathTracer, type PhotoPathTracer } from "./rendering/photoPathTracer";
 import { exportSceneToJson } from "./scene/exportSceneJson";
+import { createTopbar } from "./ui/createTopbar";
+import { loadUnderlayToCanvas } from "./ui/loadUnderlay";
+import { solveWallNetwork } from "./walls2d/solver";
 
 type AppArgs = {
   viewerEl: HTMLElement;
+  ribbonEl: HTMLElement;
+  propertiesEl: HTMLElement;
   formEl: HTMLElement;
   errorsEl: HTMLElement;
   partsEl: HTMLElement;
@@ -63,6 +69,9 @@ export function startApp(args: AppArgs) {
   let mode: AppMode = "build";
   let viewMode: "3d" | "2d" = "3d";
 
+  type LayoutTool = "select" | "wall";
+  let layoutTool: LayoutTool = "select";
+
   type RenderMode = "realtime" | "realtime_ssgi" | "photo_pathtrace";
   let renderMode: RenderMode = "realtime";
   let ssgi: SsgiPipeline | null = null;
@@ -94,11 +103,124 @@ export function startApp(args: AppArgs) {
   layoutRoot.visible = false;
   scene.add(layoutRoot);
 
+  const wallPlanGroup = new THREE.Group();
+  wallPlanGroup.name = "wallPlanGroup";
+  wallPlanGroup.visible = false;
+  layoutRoot.add(wallPlanGroup);
+
+  const wallPlanMat = new THREE.MeshBasicMaterial({ color: 0xc6cbd6 });
+  const wallPlanMeshes = new Map<string, THREE.Mesh>();
+  const wallJoinMeshes: THREE.Mesh[] = [];
+  let wallPlanUnionMesh: THREE.Mesh | null = null;
+  const wallDebugGroup = new THREE.Group();
+  wallDebugGroup.name = "wallDebugGroup";
+  wallDebugGroup.visible = false;
+  wallPlanGroup.add(wallDebugGroup);
+  let wallDebugEnabled = false;
+  const wallSolvedOutlines = new Map<string, Array<{ x: number; z: number }>>();
+
+  const underlayMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.65,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const underlayMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), underlayMat);
+  underlayMesh.name = "underlay";
+  underlayMesh.rotation.x = -Math.PI / 2;
+  underlayMesh.position.y = 0.006;
+  underlayMesh.visible = false;
+  underlayMesh.renderOrder = -10;
+  layoutRoot.add(underlayMesh);
+
+  const underlayState = {
+    sourceName: null as string | null,
+    sourceKind: null as "png" | "pdf" | null,
+    baseWidthM: 1,
+    baseHeightM: 1,
+    scale: 1,
+    rotationDeg: 0,
+    opacity: 0.65,
+    offsetMm: { x: 0, z: 0 }
+  };
+
+  const underlayCal = {
+    active: false,
+    first: null as THREE.Vector3 | null,
+    knownMm: 1000
+  };
+
   const roomBounds = {
     halfW: 3, // meters (must match createScene.ts room w=6)
     halfD: 3, // meters (must match createScene.ts room d=6)
     h: 3 // meters (must match createScene.ts room h=3)
   };
+
+  function updateUnderlayTransform() {
+    underlayMesh.scale.set(underlayState.scale, underlayState.scale, 1);
+    underlayMesh.rotation.y = (underlayState.rotationDeg * Math.PI) / 180;
+    underlayMat.opacity = underlayState.opacity;
+    underlayMesh.position.x = underlayState.offsetMm.x / 1000;
+    underlayMesh.position.z = underlayState.offsetMm.z / 1000;
+  }
+
+  function setUnderlayBaseSize(wM: number, hM: number) {
+    underlayState.baseWidthM = Math.max(0.001, wM);
+    underlayState.baseHeightM = Math.max(0.001, hM);
+    underlayMesh.geometry.dispose();
+    underlayMesh.geometry = new THREE.PlaneGeometry(underlayState.baseWidthM, underlayState.baseHeightM);
+  }
+
+  function setUnderlayFromCanvas(canvas: HTMLCanvasElement, name: string, kind: "png" | "pdf") {
+    const prev = underlayMat.map;
+    if (prev) prev.dispose();
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = Math.max(1, renderer.capabilities.getMaxAnisotropy());
+    tex.needsUpdate = true;
+    underlayMat.map = tex;
+    underlayMat.needsUpdate = true;
+
+    const roomW = roomBounds.halfW * 2;
+    const roomD = roomBounds.halfD * 2;
+    const aspect = canvas.height / Math.max(1, canvas.width);
+
+    let w = roomW;
+    let h = w * aspect;
+    if (h > roomD) {
+      h = roomD;
+      w = h / aspect;
+    }
+
+    setUnderlayBaseSize(w, h);
+
+    underlayState.sourceName = name;
+    underlayState.sourceKind = kind;
+    underlayState.scale = 1;
+    underlayState.rotationDeg = 0;
+    underlayState.opacity = 0.65;
+    underlayState.offsetMm = { x: 0, z: 0 };
+    underlayMesh.visible = true;
+    updateUnderlayTransform();
+  }
+
+  function clearUnderlay() {
+    underlayState.sourceName = null;
+    underlayState.sourceKind = null;
+    underlayState.scale = 1;
+    underlayState.rotationDeg = 0;
+    underlayState.opacity = 0.65;
+    underlayState.offsetMm = { x: 0, z: 0 };
+    underlayMesh.visible = false;
+    if (underlayMat.map) {
+      underlayMat.map.dispose();
+      underlayMat.map = null;
+    }
+    underlayMat.needsUpdate = true;
+    updateUnderlayTransform();
+  }
 
   type LayoutInstance = {
     id: string;
@@ -112,7 +234,11 @@ export function startApp(args: AppArgs) {
   const instances: LayoutInstance[] = [];
   let instanceCounter = 1;
   let selectedInstanceId: string | null = null;
+  let selectedWallId: string | null = null;
+  const selectedInstanceIds = new Set<string>();
+  const selectedWallIds = new Set<string>();
   let selectedInstanceBox: THREE.BoxHelper | null = null;
+  let selectedWallBox: THREE.BoxHelper | null = null;
 
   type WallId = "back" | "left" | "right";
   type WindowParams = {
@@ -131,7 +257,566 @@ export function startApp(args: AppArgs) {
   };
 
   let windowInst: WindowInstance | null = null;
-  let selectedKind: "module" | "window" | null = null;
+  type SelectedKind = "module" | "window" | "wall" | null;
+  let selectedKind: SelectedKind = null;
+
+  type WallParams = {
+    thicknessMm: number;
+    materialId: string;
+    justification?: "center" | "interior" | "exterior";
+    // +1 => exterior is left of A->B, -1 => exterior is right of A->B (Revit-like).
+    exteriorSign?: 1 | -1;
+    aMm: { x: number; z: number };
+    bMm: { x: number; z: number };
+  };
+
+  type WallInstance = {
+    id: string;
+    params: WallParams;
+    root: THREE.Group;
+    mesh: THREE.Mesh;
+  };
+
+  const walls: WallInstance[] = [];
+  let wallCounter = 1;
+  const wallJoinTolMm = 25;
+  const wallDefault = {
+    thicknessMm: 150,
+    heightM: 3,
+    materialId: "default",
+    justification: "center" as "center" | "interior" | "exterior",
+    exteriorSign: 1 as 1 | -1
+  };
+
+  const wallDraw = {
+    active: false,
+    a: null as THREE.Vector3 | null,
+    chainStart: null as THREE.Vector3 | null,
+    segments: 0,
+    preview: null as THREE.Mesh | null,
+    hoverB: null as THREE.Vector3 | null,
+    typedMm: "", // numeric buffer while drawing (e.g. "2500")
+    lastPointerPx: { x: 0, y: 0 }
+  };
+
+  function snapAxisXZ(a: THREE.Vector3, b: THREE.Vector3, enabled: boolean) {
+    if (!enabled) return b;
+    const dx = b.x - a.x;
+    const dz = b.z - a.z;
+    if (Math.abs(dx) >= Math.abs(dz)) return new THREE.Vector3(b.x, b.y, a.z);
+    return new THREE.Vector3(a.x, b.y, b.z);
+  }
+
+  function toMmPoint(v: THREE.Vector3) {
+    return { x: Math.round(v.x * 1000), z: Math.round(v.z * 1000) };
+  }
+
+  function fromMmPoint(p: { x: number; z: number }) {
+    return new THREE.Vector3(p.x / 1000, 0, p.z / 1000);
+  }
+
+  function mmDist(a: { x: number; z: number }, b: { x: number; z: number }) {
+    return Math.hypot(a.x - b.x, a.z - b.z);
+  }
+
+  function wallEndpointWhich(w: WallInstance, p: { x: number; z: number }, tolMm: number): "a" | "b" | null {
+    if (mmDist(w.params.aMm, p) <= tolMm) return "a";
+    if (mmDist(w.params.bMm, p) <= tolMm) return "b";
+    return null;
+  }
+
+  function setWallEndpointMm(w: WallInstance, which: "a" | "b", p: { x: number; z: number }) {
+    if (which === "a") w.params.aMm = { x: p.x, z: p.z };
+    else w.params.bMm = { x: p.x, z: p.z };
+    rebuildWall(w);
+  }
+
+  function pointOnWallAxisMm(w: WallInstance, p: { x: number; z: number }) {
+    const ax = w.params.aMm.x;
+    const az = w.params.aMm.z;
+    const bx = w.params.bMm.x;
+    const bz = w.params.bMm.z;
+    const abx = bx - ax;
+    const abz = bz - az;
+    const apx = p.x - ax;
+    const apz = p.z - az;
+    const denom = abx * abx + abz * abz;
+    if (denom < 1e-6) return { t: 0, closest: { x: ax, z: az }, distMm: Infinity };
+    const t = (apx * abx + apz * abz) / denom;
+    const tt = Math.max(0, Math.min(1, t));
+    const cx = ax + abx * tt;
+    const cz = az + abz * tt;
+    const distMm = Math.hypot(p.x - cx, p.z - cz);
+    return { t: tt, closest: { x: Math.round(cx), z: Math.round(cz) }, distMm };
+  }
+
+  function wallDirOutFromNode(w: WallInstance, node: { x: number; z: number }) {
+    const a = w.params.aMm;
+    const b = w.params.bMm;
+    const isA = mmDist(a, node) <= wallJoinTolMm;
+    const isB = mmDist(b, node) <= wallJoinTolMm;
+    if (isA && !isB) return new THREE.Vector3(b.x - a.x, 0, b.z - a.z);
+    if (isB && !isA) return new THREE.Vector3(a.x - b.x, 0, a.z - b.z);
+    // fallback: assume node is closer to A
+    return new THREE.Vector3(b.x - a.x, 0, b.z - a.z);
+  }
+
+  function wallExteriorSign(w: WallInstance) {
+    return (w.params.exteriorSign ?? 1) as 1 | -1;
+  }
+
+  function joinExtensionM(w: WallInstance, node: { x: number; z: number }) {
+    // Find best neighbor at node and compute a miter-like extension so faces overlap cleanly.
+    const neighbors = walls.filter((x) => x.id !== w.id && (mmDist(x.params.aMm, node) <= wallJoinTolMm || mmDist(x.params.bMm, node) <= wallJoinTolMm));
+    if (neighbors.length === 0) return 0;
+
+    const v0 = wallDirOutFromNode(w, node);
+    if (v0.lengthSq() < 1e-6) return 0;
+    v0.normalize();
+
+    let bestTheta = Infinity;
+    for (const n of neighbors) {
+      const v1 = wallDirOutFromNode(n, node);
+      if (v1.lengthSq() < 1e-6) continue;
+      v1.normalize();
+      const dot = Math.max(-1, Math.min(1, v0.dot(v1)));
+      const theta = Math.acos(dot); // 0..pi
+      // ignore nearly straight continuation
+      if (theta < 0.2 || Math.abs(Math.PI - theta) < 0.2) continue;
+      if (theta < bestTheta) bestTheta = theta;
+    }
+
+    if (!isFinite(bestTheta) || bestTheta === Infinity) return 0;
+
+    const thickM = Math.max(0.01, w.params.thicknessMm / 1000);
+    const tanHalf = Math.tan(bestTheta / 2);
+    if (tanHalf < 1e-4) return 0;
+    const ext = (thickM / 2) / tanHalf;
+    return Math.min(1.2, Math.max(0, ext));
+  }
+
+  function removeWall(w: WallInstance) {
+    layoutRoot.remove(w.root);
+    w.mesh.geometry.dispose();
+    (w.mesh.material as THREE.Material).dispose();
+    const idx = walls.indexOf(w);
+    if (idx >= 0) walls.splice(idx, 1);
+    if (selectedWallId === w.id) selectedWallId = null;
+    rebuildWallPlanMesh();
+  }
+
+  function splitWallAtMm(w: WallInstance, p: { x: number; z: number }) {
+    const which = wallEndpointWhich(w, p, wallJoinTolMm);
+    if (which) {
+      setWallEndpointMm(w, which, p);
+      return;
+    }
+
+    const { t, distMm } = pointOnWallAxisMm(w, p);
+    if (distMm > wallJoinTolMm) return;
+    if (t <= 0.001 || t >= 0.999) return;
+
+    const a = fromMmPoint(w.params.aMm);
+    const b = fromMmPoint(w.params.bMm);
+    const mid = fromMmPoint(p);
+    const thickness = w.params.thicknessMm;
+    const materialId = w.params.materialId;
+
+    removeWall(w);
+    const w1 = addWall(a, mid, thickness);
+    w1.params.materialId = materialId;
+    const w2 = addWall(mid, b, thickness);
+    w2.params.materialId = materialId;
+    rebuildWallPlanMesh();
+  }
+
+  function autoJoinAtMmPoint(p: { x: number; z: number }) {
+    // Snap endpoints and split any wall that crosses the point (T-joins).
+    for (const w of [...walls]) {
+      const which = wallEndpointWhich(w, p, wallJoinTolMm);
+      if (which) setWallEndpointMm(w, which, p);
+      else splitWallAtMm(w, p);
+    }
+    // Rebuild after edits so joins update.
+    for (const w of walls) rebuildWall(w);
+    rebuildWallPlanMesh();
+  }
+
+  function dist2(a: { x: number; y: number }, b: { x: number; y: number }) {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return dx * dx + dy * dy;
+  }
+
+  function cross2XZ(a: THREE.Vector3, b: THREE.Vector3) {
+    return a.x * b.z - a.z * b.x;
+  }
+
+  function intersectLinesXZ(
+    p: THREE.Vector3,
+    r: THREE.Vector3,
+    q: THREE.Vector3,
+    s: THREE.Vector3
+  ): THREE.Vector3 | null {
+    const rxs = cross2XZ(r, s);
+    if (Math.abs(rxs) < 1e-8) return null;
+    const qp = q.clone().sub(p);
+    const t = cross2XZ(qp, s) / rxs;
+    return new THREE.Vector3(p.x + r.x * t, 0, p.z + r.z * t);
+  }
+
+  function bestNeighborAtNode(w: WallInstance, node: { x: number; z: number }) {
+    let best: { n: WallInstance; u: THREE.Vector3; theta: number } | null = null;
+    const v0 = wallDirOutFromNode(w, node);
+    if (v0.lengthSq() < 1e-8) return null;
+    v0.normalize();
+
+    for (const other of walls) {
+      if (other.id === w.id) continue;
+      const isAt =
+        mmDist(other.params.aMm, node) <= wallJoinTolMm || mmDist(other.params.bMm, node) <= wallJoinTolMm;
+      if (!isAt) continue;
+      const u = wallDirOutFromNode(other, node);
+      if (u.lengthSq() < 1e-8) continue;
+      u.normalize();
+      const dot = Math.max(-1, Math.min(1, v0.dot(u)));
+      const theta = Math.acos(dot);
+      if (theta < 0.2 || Math.abs(Math.PI - theta) < 0.2) continue;
+      if (!best || theta < best.theta) best = { n: other, u, theta };
+    }
+
+    return best;
+  }
+
+  function miterEndCorners(
+    w: WallInstance,
+    which: "a" | "b"
+  ): { outer: THREE.Vector3; inner: THREE.Vector3 } {
+    const nodeMm = which === "a" ? w.params.aMm : w.params.bMm;
+    const otherMm = which === "a" ? w.params.bMm : w.params.aMm;
+    const p = fromMmPoint(nodeMm);
+    const q = fromMmPoint(otherMm);
+
+    const v = q.clone().sub(p);
+    if (v.lengthSq() < 1e-8) {
+      const n0 = new THREE.Vector3(0, 0, 1);
+      const h0 = Math.max(1, w.params.thicknessMm / 2) / 1000;
+      const s0 = wallExteriorSign(w);
+      return {
+        outer: p.clone().addScaledVector(n0, s0 * h0),
+        inner: p.clone().addScaledVector(n0, -s0 * h0)
+      };
+    }
+    v.normalize();
+    const n0 = new THREE.Vector3(-v.z, 0, v.x).normalize();
+    const h0 = Math.max(1, w.params.thicknessMm / 2) / 1000;
+    const s0 = wallExteriorSign(w);
+
+    const nb = bestNeighborAtNode(w, nodeMm);
+    if (!nb) {
+      return {
+        outer: p.clone().addScaledVector(n0, s0 * h0),
+        inner: p.clone().addScaledVector(n0, -s0 * h0)
+      };
+    }
+
+    const u = nb.u.clone().normalize();
+    const n1 = new THREE.Vector3(-u.z, 0, u.x).normalize();
+    const h1 = Math.max(1, nb.n.params.thicknessMm / 2) / 1000;
+    const s1 = wallExteriorSign(nb.n);
+
+    // Miter corners are intersections of corresponding faces (outer-outer, inner-inner).
+    const outer0 = p.clone().addScaledVector(n0, s0 * h0);
+    const inner0 = p.clone().addScaledVector(n0, -s0 * h0);
+    const outer1 = p.clone().addScaledVector(n1, s1 * h1);
+    const inner1 = p.clone().addScaledVector(n1, -s1 * h1);
+
+    const out = intersectLinesXZ(outer0, v, outer1, u) ?? outer0;
+    const inn = intersectLinesXZ(inner0, v, inner1, u) ?? inner0;
+    return { outer: out, inner: inn };
+  }
+
+  function snapPoint2D(
+    raw: THREE.Vector3,
+    rect: DOMRect,
+    camera: THREE.Camera,
+    maxPx = 14
+  ): { point: THREE.Vector3; kind: "none" | "corner" | "endpoint" | "axis" } {
+    const candidates: Array<{ p: THREE.Vector3; kind: "corner" | "endpoint" | "axis" }> = [];
+
+    // Wall endpoints
+    for (const w of walls) {
+      const a = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+      const b = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+      candidates.push({ p: a, kind: "endpoint" });
+      candidates.push({ p: b, kind: "endpoint" });
+
+      // Closest point on wall axis segment
+      const ab = b.clone().sub(a);
+      const t = ab.lengthSq() > 1e-12 ? raw.clone().sub(a).dot(ab) / ab.lengthSq() : 0;
+      const tt = Math.max(0, Math.min(1, t));
+      const closest = a.clone().add(ab.multiplyScalar(tt));
+      candidates.push({ p: closest, kind: "axis" });
+    }
+
+    // Module box corners
+    for (const inst of instances) {
+      const box = instanceWorldBox(inst);
+      const y = 0;
+      candidates.push({ p: new THREE.Vector3(box.min.x, y, box.min.z), kind: "corner" });
+      candidates.push({ p: new THREE.Vector3(box.min.x, y, box.max.z), kind: "corner" });
+      candidates.push({ p: new THREE.Vector3(box.max.x, y, box.min.z), kind: "corner" });
+      candidates.push({ p: new THREE.Vector3(box.max.x, y, box.max.z), kind: "corner" });
+    }
+
+    // Chain start (to close loop)
+    if (layoutTool === "wall" && wallDraw.chainStart) {
+      candidates.push({ p: wallDraw.chainStart.clone(), kind: "endpoint" });
+    }
+
+    const rawS = worldToScreen(raw, camera, rect);
+    let best: { p: THREE.Vector3; kind: "corner" | "endpoint" | "axis"; d2: number } | null = null;
+    for (const c of candidates) {
+      const s = worldToScreen(c.p, camera, rect);
+      const d = dist2(rawS, s);
+      if (!best || d < best.d2) best = { p: c.p, kind: c.kind, d2: d };
+    }
+
+    if (!best) return { point: raw, kind: "none" };
+    if (best.d2 > maxPx * maxPx) return { point: raw, kind: "none" };
+    return { point: best.p.clone(), kind: best.kind as any };
+  }
+
+  function updateWallMesh(mesh: THREE.Mesh, a: THREE.Vector3 | null, b: THREE.Vector3 | null, thicknessMm: number) {
+    const aa = a ?? new THREE.Vector3(0, 0, 0);
+    const bb = b ?? aa.clone();
+    const dx = bb.x - aa.x;
+    const dz = bb.z - aa.z;
+    const len = Math.max(0.001, Math.hypot(dx, dz));
+    const midX = (aa.x + bb.x) / 2;
+    const midZ = (aa.z + bb.z) / 2;
+    const rotY = -Math.atan2(dz, dx);
+
+    const thickM = Math.max(0.01, thicknessMm / 1000);
+    const h = wallDefault.heightM;
+
+    mesh.geometry.dispose();
+    mesh.geometry = new THREE.BoxGeometry(len, h, thickM);
+    mesh.position.set(midX, h / 2, midZ);
+    mesh.rotation.set(0, rotY, 0);
+  }
+
+  function rebuildWallPlanMesh() {
+    const ids = new Set(walls.map((w) => w.id));
+    for (const [id, mesh] of wallPlanMeshes) {
+      if (ids.has(id)) continue;
+      wallPlanGroup.remove(mesh);
+      mesh.geometry.dispose();
+      wallPlanMeshes.delete(id);
+    }
+    for (const m of wallJoinMeshes.splice(0, wallJoinMeshes.length)) {
+      wallPlanGroup.remove(m);
+      m.geometry.dispose();
+    }
+    if (wallPlanUnionMesh) {
+      wallPlanGroup.remove(wallPlanUnionMesh);
+      wallPlanUnionMesh.geometry.dispose();
+      wallPlanUnionMesh = null;
+    }
+
+    if (walls.length === 0) return;
+
+    const modelWalls = walls.map((w) => ({
+      id: w.id,
+      a: { x: w.params.aMm.x / 1000, z: w.params.aMm.z / 1000 },
+      b: { x: w.params.bMm.x / 1000, z: w.params.bMm.z / 1000 },
+      thicknessM: Math.max(0.001, w.params.thicknessMm / 1000),
+      justification: ((w.params as any).justification ?? "center") as any,
+      exteriorSign: ((w.params.exteriorSign ?? 1) as 1 | -1) ?? 1
+    }));
+
+    const solved = solveWallNetwork(modelWalls, { nodeTolM: wallJoinTolMm / 1000, miterLimit: 8 });
+    wallSolvedOutlines.clear();
+
+    const makePolyMesh = (poly: Array<{ x: number; z: number }>, y: number, name: string) => {
+      if (poly.length < 3) return null;
+      const shape = new THREE.Shape(poly.map((p) => new THREE.Vector2(p.x, p.z)));
+      const geom = new THREE.ShapeGeometry(shape);
+      geom.rotateX(Math.PI / 2);
+      const mesh = new THREE.Mesh(geom, wallPlanMat);
+      mesh.name = name;
+      mesh.position.y = y;
+      return mesh;
+    };
+
+    // Always keep per-wall solved outlines for hit-testing/export/debug.
+    for (const w of solved.walls) wallSolvedOutlines.set(w.id, w.outline);
+
+    // Render as a single union polygon to automatically trim overlaps/spikes at joins (CAD-like).
+    const toRing = (poly: Array<{ x: number; z: number }>) => {
+      const ring: Array<[number, number]> = poly.map((p) => [p.x, p.z]);
+      if (ring.length > 0) ring.push(ring[0]);
+      // Ensure CCW winding
+      let area = 0;
+      for (let i = 0; i < ring.length - 1; i++) {
+        const [x0, y0] = ring[i];
+        const [x1, y1] = ring[i + 1];
+        area += x0 * y1 - x1 * y0;
+      }
+      if (area < 0) ring.reverse();
+      return ring;
+    };
+
+    const polys: any[] = [];
+    for (const w of solved.walls) {
+      if (w.outline.length < 3) continue;
+      polys.push([[[toRing(w.outline)]]]);
+    }
+    for (const p of solved.joinPolys) {
+      if (p.length < 3) continue;
+      polys.push([[[toRing(p)]]]);
+    }
+
+    let merged: any = null;
+    try {
+      merged = (polygonClipping as any).union(...polys);
+    } catch {
+      merged = null;
+    }
+
+    if (merged && merged.length > 0) {
+      const shapes: THREE.Shape[] = [];
+      for (const poly of merged as any[]) {
+        const rings = poly as any[];
+        if (!rings || rings.length === 0) continue;
+        const outer = rings[0] as Array<[number, number]>;
+        if (!outer || outer.length < 3) continue;
+        const shape = new THREE.Shape(outer.map(([x, y]) => new THREE.Vector2(x, y)));
+        for (let i = 1; i < rings.length; i++) {
+          const hole = rings[i] as Array<[number, number]>;
+          if (!hole || hole.length < 3) continue;
+          const path = new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y)));
+          shape.holes.push(path);
+        }
+        shapes.push(shape);
+      }
+
+      if (shapes.length > 0) {
+        const geom = new THREE.ShapeGeometry(shapes);
+        geom.rotateX(Math.PI / 2);
+        const mesh = new THREE.Mesh(geom, wallPlanMat);
+        mesh.name = "wallPlanUnion";
+        mesh.position.y = 0.02;
+        wallPlanUnionMesh = mesh;
+        wallPlanGroup.add(mesh);
+      }
+    }
+
+    // Debug overlays
+    wallDebugGroup.visible = wallDebugEnabled;
+    if (wallDebugEnabled) {
+      while (wallDebugGroup.children.length > 0) {
+        const c = wallDebugGroup.children.pop()!;
+        wallDebugGroup.remove(c);
+        const any = c as any;
+        if (any.geometry?.dispose) any.geometry.dispose();
+        if (any.material?.dispose) any.material.dispose();
+      }
+
+      const mkLine = (pts: Array<{ x: number; z: number }>, color: number, y = 0.031) => {
+        const g = new THREE.BufferGeometry().setFromPoints(pts.map((p) => new THREE.Vector3(p.x, y, p.z)));
+        const m = new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.95 });
+        const l = new THREE.Line(g, m);
+        wallDebugGroup.add(l);
+      };
+
+      // centerlines + outlines
+      for (const w of modelWalls) {
+        mkLine([w.a, w.b], 0xffd166, 0.031);
+        const poly = wallSolvedOutlines.get(w.id);
+        if (poly && poly.length >= 3) {
+          mkLine([...poly, poly[0]], 0x5c8cff, 0.032);
+        }
+      }
+
+      // node markers
+      for (const n of solved.debug.nodes) {
+        const g = new THREE.PlaneGeometry(0.04, 0.04);
+        const m = new THREE.MeshBasicMaterial({ color: 0xff4dff, depthWrite: false });
+        const p = new THREE.Mesh(g, m);
+        p.rotation.x = -Math.PI / 2;
+        p.position.set(n.p.x, 0.033, n.p.z);
+        wallDebugGroup.add(p);
+      }
+    }
+  }
+
+  function createWallMesh(a: THREE.Vector3, b: THREE.Vector3, thicknessMm: number) {
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xc6cbd6
+    });
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, wallDefault.heightM, thicknessMm / 1000), mat);
+    updateWallMesh(mesh, a, b, thicknessMm);
+    return mesh;
+  }
+
+  function makeWallPreviewMesh(a: THREE.Vector3, b: THREE.Vector3, thicknessMm: number) {
+    const mesh = createWallMesh(a, b, thicknessMm);
+    const m = mesh.material as THREE.MeshBasicMaterial;
+    m.transparent = true;
+    m.opacity = 0.5;
+    return mesh;
+  }
+
+  function rebuildWall(w: WallInstance) {
+    const a = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+    const b = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+    // Revit-like join rendering in 3D: extend ends to form miter-like corner joins.
+    // This does not change stored axis endpoints (aMm/bMm); only the rendered mesh.
+    const d = b.clone().sub(a);
+    if (d.lengthSq() < 1e-8) {
+      updateWallMesh(w.mesh, a, b, w.params.thicknessMm);
+      return;
+    }
+    d.normalize();
+
+    const extA = joinExtensionM(w, w.params.aMm);
+    const extB = joinExtensionM(w, w.params.bMm);
+
+    const aExt = a.clone().addScaledVector(d, -extA);
+    const bExt = b.clone().addScaledVector(d, extB);
+    updateWallMesh(w.mesh, aExt, bExt, w.params.thicknessMm);
+  }
+
+  function addWall(a: THREE.Vector3, b: THREE.Vector3, thicknessMm: number) {
+    const id = `w${wallCounter++}`;
+    const root = new THREE.Group();
+    root.name = `wall_${id}`;
+
+    const mesh = createWallMesh(a, b, thicknessMm);
+    mesh.name = `wallMesh_${id}`;
+    mesh.userData.kind = "wall";
+    mesh.userData.wallId = id;
+    root.add(mesh);
+
+    const aMm = toMmPoint(a);
+    const bMm = toMmPoint(b);
+    const params: WallParams = {
+      thicknessMm: Math.max(10, Math.round(thicknessMm)),
+      materialId: wallDefault.materialId,
+      justification: wallDefault.justification,
+      exteriorSign: wallDefault.exteriorSign,
+      aMm,
+      bMm
+    };
+
+    const inst: WallInstance = { id, params, root, mesh };
+    layoutRoot.add(root);
+    walls.push(inst);
+    rebuildWall(inst);
+    rebuildWallPlanMesh();
+    return inst;
+  }
 
   const wallEps = 0.002;
   const wallDefs: Record<
@@ -205,6 +890,129 @@ export function startApp(args: AppArgs) {
 
   window.addEventListener("keydown", (ev) => {
     if (isTypingTarget(ev.target)) return;
+
+    if (mode === "layout") {
+      if (ev.key === "Escape" && layoutTool === "wall") {
+        wallDraw.active = false;
+        wallDraw.a = null;
+        wallDraw.chainStart = null;
+        wallDraw.segments = 0;
+        wallDraw.hoverB = null;
+        wallDraw.typedMm = "";
+        if (wallDraw.preview) {
+          layoutRoot.remove(wallDraw.preview);
+          wallDraw.preview.geometry.dispose();
+          (wallDraw.preview.material as THREE.Material).dispose();
+          wallDraw.preview = null;
+        }
+        wallSnapHud.style.display = "none";
+        wallTypedHud.style.display = "none";
+        setUnderlayStatus("Wall: stopped.");
+        layoutTool = "select";
+        mountProps();
+        ev.preventDefault();
+        return;
+      }
+
+      // Typed length while placing wall segment (Revit-style).
+      if (layoutTool === "wall" && wallDraw.active && wallDraw.a && viewMode === "2d") {
+        const isDigit = ev.key.length === 1 && ev.key >= "0" && ev.key <= "9";
+        if (isDigit) {
+          wallDraw.typedMm = `${wallDraw.typedMm}${ev.key}`.slice(0, 8);
+          wallTypedHud.textContent = `${wallDraw.typedMm} mm`;
+          wallTypedHud.style.left = `${wallDraw.lastPointerPx.x}px`;
+          wallTypedHud.style.top = `${wallDraw.lastPointerPx.y}px`;
+          wallTypedHud.style.display = "block";
+          setUnderlayStatus(`Wall: ${wallDraw.typedMm} mm (Enter = place, Backspace = edit)`);
+          ev.preventDefault();
+          return;
+        }
+        if (ev.key === "Backspace") {
+          wallDraw.typedMm = wallDraw.typedMm.slice(0, Math.max(0, wallDraw.typedMm.length - 1));
+          if (wallDraw.typedMm.trim().length > 0) {
+            wallTypedHud.textContent = `${wallDraw.typedMm} mm`;
+            wallTypedHud.style.left = `${wallDraw.lastPointerPx.x}px`;
+            wallTypedHud.style.top = `${wallDraw.lastPointerPx.y}px`;
+            wallTypedHud.style.display = "block";
+            setUnderlayStatus(`Wall: ${wallDraw.typedMm} mm (Enter = place, Backspace = edit)`);
+          } else {
+            wallTypedHud.style.display = "none";
+            setUnderlayStatus("Wall: druhý bod... (píš mm + Enter, Shift = bez axis snap, Esc = stop)");
+          }
+          ev.preventDefault();
+          return;
+        }
+        if (ev.key === "Enter" && wallDraw.typedMm.trim().length > 0) {
+          const mm = Math.max(1, Math.round(Number(wallDraw.typedMm)));
+          if (Number.isFinite(mm) && wallDraw.a) {
+            const a = wallDraw.a.clone();
+            const hb = wallDraw.hoverB ? wallDraw.hoverB.clone() : a.clone().add(new THREE.Vector3(1, 0, 0));
+            const dir = hb.clone().sub(a);
+            if (dir.lengthSq() < 1e-8) dir.set(1, 0, 0);
+            dir.normalize();
+            const end = a.clone().addScaledVector(dir, mm / 1000);
+
+            const bMm = { x: Math.round(end.x * 1000), z: Math.round(end.z * 1000) };
+            const bExact = new THREE.Vector3(bMm.x / 1000, 0, bMm.z / 1000);
+
+            // close loop when near chain start
+            const closeTolM = 0.03;
+            const cs = wallDraw.chainStart;
+            const closes =
+              !!cs && wallDraw.segments >= 2 && Math.hypot(bExact.x - cs.x, bExact.z - cs.z) <= closeTolM;
+            const finalEnd = closes && cs ? cs.clone() : bExact;
+
+            const w = addWall(a, finalEnd, wallDefault.thicknessMm);
+            autoJoinAtMmPoint(w.params.aMm);
+            autoJoinAtMmPoint(w.params.bMm);
+            wallDraw.segments += 1;
+
+            wallDraw.typedMm = "";
+            wallTypedHud.style.display = "none";
+
+            if (closes) {
+              wallDraw.active = false;
+              wallDraw.a = null;
+              wallDraw.chainStart = null;
+              wallDraw.segments = 0;
+              wallDraw.hoverB = null;
+              if (wallDraw.preview) {
+                layoutRoot.remove(wallDraw.preview);
+                wallDraw.preview.geometry.dispose();
+                (wallDraw.preview.material as THREE.Material).dispose();
+                wallDraw.preview = null;
+              }
+              setUnderlayStatus("Wall: chain closed.");
+              ev.preventDefault();
+              return;
+            }
+
+            wallDraw.active = true;
+            wallDraw.a = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+            wallDraw.hoverB = wallDraw.a.clone();
+            updateWallMesh(wallDraw.preview!, wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+            setUnderlayStatus("Wall: ďalší bod... (píš mm + Enter, Shift = bez axis snap, Esc = stop)");
+            selectedKind = "wall";
+            selectedWallId = w.id;
+            mountProps();
+            ev.preventDefault();
+            return;
+          }
+        }
+      }
+
+      if (ev.key === "Delete" || ev.key === "Backspace") {
+        if (selectedWallIds.size > 0) {
+          const ids = Array.from(selectedWallIds);
+          for (const id of ids) deleteWall(id);
+          setSelectedWall(null);
+          selectedWallIds.clear();
+          ev.preventDefault();
+          return;
+        }
+      }
+    }
+
     const code = ev.code;
     if (
       code !== "KeyW" &&
@@ -230,6 +1038,10 @@ export function startApp(args: AppArgs) {
     navKeys.clear();
   });
 
+  args.viewerEl.addEventListener("pointerleave", () => {
+    wallSnapHud.style.display = "none";
+  });
+
   let selectedMesh: THREE.Mesh | null = null;
   let selectedBox: THREE.BoxHelper | null = null;
   let grainArrow: THREE.ArrowHelper | null = null;
@@ -242,6 +1054,215 @@ export function startApp(args: AppArgs) {
   measureOverlay.style.inset = "0";
   measureOverlay.style.pointerEvents = "none";
   args.viewerEl.appendChild(measureOverlay);
+
+  const wallSnapHud = document.createElement("div");
+  wallSnapHud.style.position = "absolute";
+  wallSnapHud.style.width = "10px";
+  wallSnapHud.style.height = "10px";
+  wallSnapHud.style.border = "2px solid #e6e8ee";
+  wallSnapHud.style.background = "transparent";
+  wallSnapHud.style.transform = "translate(-50%, -50%)";
+  wallSnapHud.style.display = "none";
+  wallSnapHud.style.boxShadow = "0 0 0 1px rgba(0,0,0,0.45)";
+  measureOverlay.appendChild(wallSnapHud);
+
+  // Typed-length HUD while drawing walls (shows the number near cursor).
+  const wallTypedHud = document.createElement("div");
+  wallTypedHud.style.position = "absolute";
+  wallTypedHud.style.transform = "translate(10px, -28px)";
+  wallTypedHud.style.display = "none";
+  wallTypedHud.style.pointerEvents = "none";
+  wallTypedHud.style.padding = "2px 6px";
+  wallTypedHud.style.borderRadius = "8px";
+  wallTypedHud.style.border = "1px solid rgba(36, 40, 54, 0.95)";
+  wallTypedHud.style.background = "rgba(18, 20, 26, 0.92)";
+  wallTypedHud.style.color = "rgba(230, 232, 238, 0.98)";
+  wallTypedHud.style.fontSize = "12px";
+  wallTypedHud.style.lineHeight = "18px";
+  wallTypedHud.style.whiteSpace = "nowrap";
+  measureOverlay.appendChild(wallTypedHud);
+
+  // Wall edit HUD (2D): endpoints + dimension label
+  const wallEditHud = {
+    root: document.createElement("div"),
+    label: document.createElement("div"),
+    input: document.createElement("input"),
+    lenLine: document.createElement("div"),
+    lenExtA: document.createElement("div"),
+    lenExtB: document.createElement("div"),
+    offsetLabel: document.createElement("div"),
+    offsetInput: document.createElement("input"),
+    offsetLine: document.createElement("div"),
+    offsetTickA: document.createElement("div"),
+    offsetTickB: document.createElement("div"),
+    handleA: document.createElement("div"),
+    handleB: document.createElement("div"),
+    handleMid: document.createElement("div"),
+    offsetRefWallId: null as string | null,
+    drag: null as
+      | null
+      | {
+          wallId: string;
+          kind: "a" | "b" | "move";
+          pointerId: number;
+          startWorld: THREE.Vector3;
+          startA: { x: number; z: number };
+          startB: { x: number; z: number };
+          connectedA: Array<{ wallId: string; which: "a" | "b" }>;
+          connectedB: Array<{ wallId: string; which: "a" | "b" }>;
+        }
+  };
+  {
+    const root = wallEditHud.root;
+    root.style.position = "absolute";
+    root.style.inset = "0";
+    root.style.pointerEvents = "none";
+    root.style.zIndex = "9";
+    args.viewerEl.appendChild(root);
+
+    const lineBase = (el: HTMLDivElement, color = "rgba(92, 140, 255, 0.95)") => {
+      el.style.position = "absolute";
+      el.style.height = "1px";
+      el.style.background = color;
+      el.style.transformOrigin = "0 0";
+      el.style.display = "none";
+      el.style.pointerEvents = "none";
+    };
+    lineBase(wallEditHud.lenLine, "rgba(92, 140, 255, 0.95)");
+    lineBase(wallEditHud.lenExtA, "rgba(92, 140, 255, 0.85)");
+    lineBase(wallEditHud.lenExtB, "rgba(92, 140, 255, 0.85)");
+    root.appendChild(wallEditHud.lenLine);
+    root.appendChild(wallEditHud.lenExtA);
+    root.appendChild(wallEditHud.lenExtB);
+
+    lineBase(wallEditHud.offsetLine, "rgba(92, 140, 255, 0.95)");
+    lineBase(wallEditHud.offsetTickA, "rgba(92, 140, 255, 0.95)");
+    lineBase(wallEditHud.offsetTickB, "rgba(92, 140, 255, 0.95)");
+    root.appendChild(wallEditHud.offsetLine);
+    root.appendChild(wallEditHud.offsetTickA);
+    root.appendChild(wallEditHud.offsetTickB);
+
+    const handleBase = (el: HTMLDivElement) => {
+      el.style.position = "absolute";
+      el.style.width = "10px";
+      el.style.height = "10px";
+      el.style.borderRadius = "999px";
+      el.style.border = "2px solid rgba(230, 232, 238, 0.95)";
+      el.style.background = "rgba(12, 14, 18, 0.35)";
+      el.style.transform = "translate(-50%, -50%)";
+      el.style.display = "none";
+      el.style.pointerEvents = "auto";
+      el.style.boxShadow = "0 0 0 1px rgba(0,0,0,0.45)";
+    };
+
+    handleBase(wallEditHud.handleA);
+    wallEditHud.handleA.title = "Wall start";
+    root.appendChild(wallEditHud.handleA);
+
+    handleBase(wallEditHud.handleB);
+    wallEditHud.handleB.title = "Wall end";
+    root.appendChild(wallEditHud.handleB);
+
+    const mid = wallEditHud.handleMid;
+    mid.style.position = "absolute";
+    mid.style.width = "10px";
+    mid.style.height = "10px";
+    mid.style.borderRadius = "6px";
+    mid.style.border = "2px solid rgba(61, 220, 151, 0.95)";
+    mid.style.background = "rgba(12, 14, 18, 0.35)";
+    mid.style.transform = "translate(-50%, -50%)";
+    mid.style.display = "none";
+    mid.style.pointerEvents = "auto";
+    mid.style.boxShadow = "0 0 0 1px rgba(0,0,0,0.45)";
+    mid.title = "Move wall";
+    root.appendChild(mid);
+
+    const label = wallEditHud.label;
+    label.style.position = "absolute";
+    label.style.transform = "translate(-50%, -50%)";
+    label.style.display = "none";
+    label.style.pointerEvents = "auto";
+    label.style.cursor = "pointer";
+    label.style.padding = "2px 6px";
+    label.style.borderRadius = "8px";
+    label.style.border = "1px solid rgba(36, 40, 54, 0.95)";
+    label.style.background = "rgba(18, 20, 26, 0.92)";
+    label.style.color = "rgba(230, 232, 238, 0.98)";
+    label.style.fontSize = "12px";
+    label.style.lineHeight = "18px";
+    label.style.userSelect = "none";
+    label.style.whiteSpace = "nowrap";
+    root.appendChild(label);
+
+    const input = wallEditHud.input;
+    input.type = "text";
+    input.inputMode = "numeric";
+    input.placeholder = "mm";
+    input.style.position = "absolute";
+    input.style.display = "none";
+    input.style.pointerEvents = "auto";
+    input.style.zIndex = "12";
+    input.style.width = "88px";
+    input.style.height = "22px";
+    input.style.borderRadius = "7px";
+    input.style.border = "1px solid rgba(36, 40, 54, 0.95)";
+    input.style.background = "#0f1117";
+    input.style.color = "var(--text)";
+    input.style.padding = "0 6px";
+    input.style.fontSize = "12px";
+    input.style.outline = "none";
+    root.appendChild(input);
+
+    const oLabel = wallEditHud.offsetLabel;
+    oLabel.style.position = "absolute";
+    oLabel.style.transform = "translate(-50%, -50%)";
+    oLabel.style.display = "none";
+    oLabel.style.pointerEvents = "auto";
+    oLabel.style.cursor = "pointer";
+    oLabel.style.padding = "2px 6px";
+    oLabel.style.borderRadius = "8px";
+    oLabel.style.border = "1px solid rgba(36, 40, 54, 0.95)";
+    oLabel.style.background = "rgba(18, 20, 26, 0.92)";
+    oLabel.style.color = "rgba(230, 232, 238, 0.98)";
+    oLabel.style.fontSize = "12px";
+    oLabel.style.lineHeight = "18px";
+    oLabel.style.userSelect = "none";
+    oLabel.style.whiteSpace = "nowrap";
+    root.appendChild(oLabel);
+
+    const oInput = wallEditHud.offsetInput;
+    oInput.type = "text";
+    oInput.inputMode = "numeric";
+    oInput.placeholder = "mm";
+    oInput.style.position = "absolute";
+    oInput.style.display = "none";
+    oInput.style.pointerEvents = "auto";
+    oInput.style.zIndex = "12";
+    oInput.style.width = "88px";
+    oInput.style.height = "22px";
+    oInput.style.borderRadius = "7px";
+    oInput.style.border = "1px solid rgba(36, 40, 54, 0.95)";
+    oInput.style.background = "#0f1117";
+    oInput.style.color = "var(--text)";
+    oInput.style.padding = "0 6px";
+    oInput.style.fontSize = "12px";
+    oInput.style.outline = "none";
+    root.appendChild(oInput);
+  }
+
+  const marquee = {
+    active: false,
+    startX: 0,
+    startY: 0,
+    mode: "contain" as "contain" | "touch"
+  };
+  const marqueeEl = document.createElement("div");
+  marqueeEl.style.position = "absolute";
+  marqueeEl.style.border = "1px solid rgba(255, 209, 102, 0.95)";
+  marqueeEl.style.background = "rgba(255, 209, 102, 0.08)";
+  marqueeEl.style.display = "none";
+  marqueeEl.style.pointerEvents = "none";
+  measureOverlay.appendChild(marqueeEl);
 
   const measureState = {
     enabled: false,
@@ -621,6 +1642,914 @@ export function startApp(args: AppArgs) {
     onDelete: (id) => deleteInstance(id)
   });
 
+  // Ribbon (Revit-style tabs) [legacy]
+  let underlayStatusEl: HTMLDivElement | null = null;
+  const setUnderlayStatus = (text: string) => {
+    if (underlayStatusEl) underlayStatusEl.textContent = text;
+  };
+
+  const hideWallEditHud = () => {
+    wallEditHud.lenLine.style.display = "none";
+    wallEditHud.lenExtA.style.display = "none";
+    wallEditHud.lenExtB.style.display = "none";
+    wallEditHud.offsetLine.style.display = "none";
+    wallEditHud.offsetTickA.style.display = "none";
+    wallEditHud.offsetTickB.style.display = "none";
+    wallEditHud.handleA.style.display = "none";
+    wallEditHud.handleB.style.display = "none";
+    wallEditHud.handleMid.style.display = "none";
+    wallEditHud.label.style.display = "none";
+    wallEditHud.input.style.display = "none";
+    wallEditHud.offsetLabel.style.display = "none";
+    wallEditHud.offsetInput.style.display = "none";
+    wallEditHud.offsetRefWallId = null;
+  };
+
+  const commitWallLengthMm = (raw: string) => {
+    if (selectedKind !== "wall" || !selectedWallId) return;
+    const w = walls.find((x) => x.id === selectedWallId) ?? null;
+    if (!w) return;
+
+    const v = Number(String(raw).trim().replace(/[^0-9.\\-]/g, ""));
+    if (!Number.isFinite(v)) return;
+    const lenMm = Math.max(1, Math.round(v));
+
+    const oldB = { ...w.params.bMm };
+    const a = fromMmPoint(w.params.aMm);
+    const b = fromMmPoint(w.params.bMm);
+    const d = b.clone().sub(a);
+    if (d.lengthSq() < 1e-8) d.set(1, 0, 0);
+    d.normalize();
+    const newB = a.clone().addScaledVector(d, lenMm / 1000);
+    const newBMm = toMmPoint(newB);
+    setWallEndpointMm(w, "b", newBMm);
+
+    // Keep connected joins attached (move any walls that shared the old endpoint).
+    for (const other of walls) {
+      if (other.id === w.id) continue;
+      const which = wallEndpointWhich(other, oldB, wallJoinTolMm);
+      if (which) setWallEndpointMm(other, which, newBMm);
+    }
+
+    autoJoinAtMmPoint(w.params.aMm);
+    autoJoinAtMmPoint(w.params.bMm);
+    rebuildWallPlanMesh();
+    mountProps();
+  };
+
+  const commitWallOffsetMm = (raw: string) => {
+    if (selectedKind !== "wall" || !selectedWallId) return;
+    const w = walls.find((x) => x.id === selectedWallId) ?? null;
+    const refId = wallEditHud.offsetRefWallId;
+    const ref = refId ? walls.find((x) => x.id === refId) ?? null : null;
+    if (!w || !ref) return;
+
+    const v = Number(String(raw).trim().replace(/[^0-9.\\-]/g, ""));
+    if (!Number.isFinite(v)) return;
+    const desiredOffsetMm = Math.max(0, Math.round(v));
+
+    const a = fromMmPoint(w.params.aMm);
+    const b = fromMmPoint(w.params.bMm);
+    const d = b.clone().sub(a);
+    if (d.lengthSq() < 1e-8) return;
+    d.normalize();
+    const n = new THREE.Vector3(-d.z, 0, d.x).normalize();
+
+    const ra = fromMmPoint(ref.params.aMm);
+    const rb = fromMmPoint(ref.params.bMm);
+    const rmid = ra.clone().add(rb).multiplyScalar(0.5);
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+
+    const signed = rmid.clone().sub(mid).dot(n);
+    const sign = signed >= 0 ? 1 : -1;
+    const currentCenterDistM = Math.abs(signed);
+    const desiredCenterDistM = desiredOffsetMm / 1000 + (w.params.thicknessMm + ref.params.thicknessMm) / 2000;
+    const desiredSigned = sign * desiredCenterDistM;
+    const shift = signed - desiredSigned;
+
+    const shiftMm = { x: Math.round(n.x * shift * 1000), z: Math.round(n.z * shift * 1000) };
+
+    const oldA = { ...w.params.aMm };
+    const oldB = { ...w.params.bMm };
+
+    w.params.aMm = { x: w.params.aMm.x + shiftMm.x, z: w.params.aMm.z + shiftMm.z };
+    w.params.bMm = { x: w.params.bMm.x + shiftMm.x, z: w.params.bMm.z + shiftMm.z };
+
+    // Keep connected joins attached at both ends.
+    for (const other of walls) {
+      if (other.id === w.id) continue;
+      const wa = wallEndpointWhich(other, oldA, wallJoinTolMm);
+      if (wa) setWallEndpointMm(other, wa, w.params.aMm);
+      const wb = wallEndpointWhich(other, oldB, wallJoinTolMm);
+      if (wb) setWallEndpointMm(other, wb, w.params.bMm);
+    }
+
+    rebuildWall(w);
+    autoJoinAtMmPoint(w.params.aMm);
+    autoJoinAtMmPoint(w.params.bMm);
+    rebuildWallPlanMesh();
+    mountProps();
+  };
+
+  wallEditHud.label.addEventListener("pointerdown", (ev) => {
+    if (selectedKind !== "wall" || !selectedWallId) return;
+    if (mode !== "layout" || viewMode !== "2d") return;
+    if (layoutTool === "wall" && wallDraw.active) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    const w = walls.find((x) => x.id === selectedWallId) ?? null;
+    if (!w) return;
+    wallEditHud.input.value = String(Math.round(mmDist(w.params.aMm, w.params.bMm)));
+    wallEditHud.input.style.left = wallEditHud.label.style.left;
+    wallEditHud.input.style.top = wallEditHud.label.style.top;
+    wallEditHud.input.style.transform = "translate(-50%, -50%)";
+    wallEditHud.input.style.display = "block";
+    wallEditHud.input.focus();
+    wallEditHud.input.select();
+  });
+
+  wallEditHud.input.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      commitWallLengthMm(wallEditHud.input.value);
+      wallEditHud.input.blur();
+      ev.preventDefault();
+    } else if (ev.key === "Escape") {
+      wallEditHud.input.style.display = "none";
+      wallEditHud.input.blur();
+      ev.preventDefault();
+    }
+  });
+  wallEditHud.input.addEventListener("blur", () => {
+    wallEditHud.input.style.display = "none";
+  });
+
+  wallEditHud.offsetLabel.addEventListener("pointerdown", (ev) => {
+    if (selectedKind !== "wall" || !selectedWallId) return;
+    if (mode !== "layout" || viewMode !== "2d") return;
+    if (layoutTool === "wall" && wallDraw.active) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    wallEditHud.offsetInput.value = String(wallEditHud.offsetLabel.textContent?.replace(/[^0-9\\-]/g, "") ?? "");
+    wallEditHud.offsetInput.style.left = wallEditHud.offsetLabel.style.left;
+    wallEditHud.offsetInput.style.top = wallEditHud.offsetLabel.style.top;
+    wallEditHud.offsetInput.style.transform = "translate(-50%, -50%)";
+    wallEditHud.offsetInput.style.display = "block";
+    wallEditHud.offsetInput.focus();
+    wallEditHud.offsetInput.select();
+  });
+
+  wallEditHud.offsetInput.addEventListener("keydown", (ev) => {
+    if (ev.key === "Enter") {
+      commitWallOffsetMm(wallEditHud.offsetInput.value);
+      wallEditHud.offsetInput.blur();
+      ev.preventDefault();
+    } else if (ev.key === "Escape") {
+      wallEditHud.offsetInput.style.display = "none";
+      wallEditHud.offsetInput.blur();
+      ev.preventDefault();
+    }
+  });
+  wallEditHud.offsetInput.addEventListener("blur", () => {
+    wallEditHud.offsetInput.style.display = "none";
+  });
+
+  const beginWallDrag = (
+    ev: PointerEvent,
+    wallId: string,
+    kind: "a" | "b" | "move"
+  ) => {
+    if (mode !== "layout" || viewMode !== "2d") return;
+    if (layoutTool !== "select") return;
+    if (measureState.enabled) return;
+
+    const w = walls.find((x) => x.id === wallId) ?? null;
+    if (!w) return;
+
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+    pointerNdc.set(x, y);
+    raycaster.setFromCamera(pointerNdc, cam());
+    const hitPoint = new THREE.Vector3();
+    if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+
+    const gatherConnected = (p: { x: number; z: number }) => {
+      const out: Array<{ wallId: string; which: "a" | "b" }> = [];
+      for (const other of walls) {
+        if (other.id === wallId) continue;
+        const which = wallEndpointWhich(other, p, wallJoinTolMm);
+        if (which) out.push({ wallId: other.id, which });
+      }
+      return out;
+    };
+
+    wallEditHud.drag = {
+      wallId,
+      kind,
+      pointerId: ev.pointerId,
+      startWorld: hitPoint.clone(),
+      startA: { ...w.params.aMm },
+      startB: { ...w.params.bMm },
+      connectedA: gatherConnected(w.params.aMm),
+      connectedB: gatherConnected(w.params.bMm)
+    };
+
+    try {
+      renderer.domElement.setPointerCapture(ev.pointerId);
+    } catch {
+      // ignore
+    }
+
+    ev.preventDefault();
+    ev.stopPropagation();
+  };
+
+  wallEditHud.handleA.addEventListener("pointerdown", (ev) => {
+    if (selectedKind !== "wall" || !selectedWallId) return;
+    beginWallDrag(ev, selectedWallId, "a");
+  });
+  wallEditHud.handleB.addEventListener("pointerdown", (ev) => {
+    if (selectedKind !== "wall" || !selectedWallId) return;
+    beginWallDrag(ev, selectedWallId, "b");
+  });
+  wallEditHud.handleMid.addEventListener("pointerdown", (ev) => {
+    if (selectedKind !== "wall" || !selectedWallId) return;
+    beginWallDrag(ev, selectedWallId, "move");
+  });
+
+  const ensureLayoutMode = () => {
+    if (mode !== "layout") {
+      modeSelect.value = "layout";
+      setMode("layout");
+    }
+  };
+
+  /* legacy ribbon UI (disabled)
+  createRibbon(args.ribbonEl, [
+    {
+      id: "kitchens",
+      title: "Kuchyne",
+      build(panelEl) {
+        const g = ribbonGroup(panelEl, "Moduly");
+        const a = ribbonActions(g, 3);
+        ribbonButton(a, "Pridať drawer", () => {
+          ensureLayoutMode();
+          addInstance("drawer_low");
+        });
+        ribbonButton(a, "Pridať shelves", () => {
+          ensureLayoutMode();
+          addInstance("shelves");
+        });
+        ribbonButton(a, "Pridať corner", () => {
+          ensureLayoutMode();
+          addInstance("corner_shelf_lower");
+        });
+
+        const g2 = ribbonGroup(panelEl, "Výber");
+        const a2 = ribbonActions(g2, 3);
+        ribbonButton(a2, "Duplikovať", () => {
+          ensureLayoutMode();
+          if (!selectedInstanceId) return;
+          duplicateInstance(selectedInstanceId);
+        });
+        ribbonButton(a2, "Zmazať", () => {
+          ensureLayoutMode();
+          if (!selectedInstanceId) return;
+          deleteInstance(selectedInstanceId);
+        });
+        ribbonButton(a2, "2D pohľad", () => {
+          ensureLayoutMode();
+          view2d.checked = !view2d.checked;
+          setView2d(view2d.checked);
+        });
+
+        const g3 = ribbonGroup(panelEl, "Projekt");
+        const a3 = ribbonActions(g3, 3);
+        ribbonButton(a3, "Reset defaults", () => args.resetBtn.click());
+        ribbonButton(a3, "Export JSON", () => args.exportBtn.click());
+        ribbonButton(a3, "Copy export", () => args.copyBtn.click());
+
+        const resetViewBtn = args.viewerEl.querySelector("#resetViewBtn") as HTMLButtonElement | null;
+        ribbonButton(a3, "Reset view", () => resetViewBtn?.click());
+      }
+    },
+    {
+      id: "walls",
+      title: "Stena",
+      build(panelEl) {
+        const g = ribbonGroup(panelEl, "Podklad (PDF/PNG)");
+
+        const file = document.createElement("input");
+        file.type = "file";
+        file.accept = ".png,.pdf,image/png,application/pdf";
+        ribbonRow(g, "Nahrať", file);
+
+        const clearBtnWrap = ribbonActions(g, 1);
+        ribbonButton(clearBtnWrap, "Odstrániť podklad", () => {
+          ensureLayoutMode();
+          clearUnderlay();
+          setUnderlayStatus("Podklad odstránený.");
+        });
+
+        const opacity = document.createElement("input");
+        opacity.type = "range";
+        opacity.min = "0";
+        opacity.max = "1";
+        opacity.step = "0.01";
+        opacity.value = String(underlayState.opacity);
+        ribbonRow(g, "Opacity", opacity);
+
+        const rot = document.createElement("input");
+        rot.type = "number";
+        rot.step = "1";
+        rot.value = String(underlayState.rotationDeg);
+        ribbonRow(g, "Rotácia (°)", rot);
+
+        const offX = document.createElement("input");
+        offX.type = "number";
+        offX.step = "1";
+        offX.value = String(underlayState.offsetMm.x);
+        ribbonRow(g, "Offset X (mm)", offX);
+
+        const offZ = document.createElement("input");
+        offZ.type = "number";
+        offZ.step = "1";
+        offZ.value = String(underlayState.offsetMm.z);
+        ribbonRow(g, "Offset Z (mm)", offZ);
+
+        const known = document.createElement("input");
+        known.type = "number";
+        known.step = "1";
+        known.value = String(underlayCal.knownMm);
+        ribbonRow(g, "Kalibrácia (mm)", known);
+
+        const calWrap = ribbonActions(g, 2);
+        ribbonButton(calWrap, "Kalibrovať škálu", () => {
+          ensureLayoutMode();
+          if (!underlayMesh.visible) {
+            setUnderlayStatus("Najprv nahraj podklad.");
+            return;
+          }
+          underlayCal.knownMm = Math.max(1, Number(known.value) || 1);
+          underlayCal.active = true;
+          underlayCal.first = null;
+          setUnderlayStatus("Kalibrácia: klikni prvý bod...");
+        });
+        ribbonButton(calWrap, "Reset škály", () => {
+          ensureLayoutMode();
+          underlayState.scale = 1;
+          updateUnderlayTransform();
+          setUnderlayStatus("Škála resetnutá.");
+        });
+
+        underlayStatusEl = document.createElement("div");
+        underlayStatusEl.className = "muted";
+        underlayStatusEl.style.fontSize = "12px";
+        underlayStatusEl.textContent = "Nahraj PDF/PNG podklad a nastav 1:1 kalibráciou.";
+        g.appendChild(underlayStatusEl);
+
+        file.addEventListener("change", async () => {
+          ensureLayoutMode();
+          const f = file.files?.[0] ?? null;
+          if (!f) return;
+          setUnderlayStatus("Načítavam...");
+          try {
+            const res = await loadUnderlayToCanvas(f);
+            setUnderlayFromCanvas(res.canvas, res.name, res.kind);
+            opacity.value = String(underlayState.opacity);
+            rot.value = String(underlayState.rotationDeg);
+            offX.value = String(underlayState.offsetMm.x);
+            offZ.value = String(underlayState.offsetMm.z);
+            setUnderlayStatus(`Podklad: ${res.name}`);
+          } catch (e) {
+            setUnderlayStatus(`Chyba pri načítaní: ${(e as Error).message}`);
+          } finally {
+            file.value = "";
+          }
+        });
+
+        opacity.addEventListener("input", () => {
+          underlayState.opacity = Math.min(1, Math.max(0, Number(opacity.value) || 0));
+          updateUnderlayTransform();
+        });
+
+        rot.addEventListener("change", () => {
+          underlayState.rotationDeg = Number(rot.value) || 0;
+          updateUnderlayTransform();
+        });
+
+        offX.addEventListener("change", () => {
+          underlayState.offsetMm.x = Number(offX.value) || 0;
+          updateUnderlayTransform();
+        });
+
+        offZ.addEventListener("change", () => {
+          underlayState.offsetMm.z = Number(offZ.value) || 0;
+          updateUnderlayTransform();
+        });
+
+        const g2 = ribbonGroup(panelEl, "Steny");
+        const a2 = ribbonActions(g2, 3);
+        ribbonButton(a2, "Pridať stenu");
+        ribbonButton(a2, "Odsadiť stenu");
+        ribbonButton(a2, "Zmazať stenu");
+      }
+    },
+    {
+      id: "doors",
+      title: "Dvere",
+      build(panelEl) {
+        const g = ribbonGroup(panelEl, "Dvere");
+        const a = ribbonActions(g, 3);
+        ribbonButton(a, "Pridať dvere");
+        ribbonButton(a, "Editovať dvere");
+        ribbonButton(a, "Odstrániť dvere");
+      }
+    },
+    {
+      id: "windows",
+      title: "Okno",
+      build(panelEl) {
+        const g = ribbonGroup(panelEl, "Okno");
+        const a = ribbonActions(g, 3);
+        ribbonButton(a, "Pridať/označiť okno", () => {
+          ensureLayoutMode();
+          addOrSelectWindow();
+        });
+      }
+    }
+  ]);
+  */
+
+  // Top bar (single strip with icon buttons)
+  const icon = (d: string) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+  const I_SELECT = icon("M4 4h7v2H6v5H4V4zm14 0v7h-2V6h-5V4h7zM4 20v-7h2v5h5v2H4zm16-7v7h-7v-2h5v-5h2z");
+  const I_WALL = icon("M4 6h16v2H4V6zm0 10h16v2H4v-2zM6 8h2v8H6V8zm10 0h2v8h-2V8z");
+  const I_WINDOW = icon("M5 4h14v16H5V4zm2 2v6h5V6H7zm7 0v6h5V6h-5zM7 14v4h5v-4H7zm7 0v4h5v-4h-5z");
+  const I_DOOR = icon("M6 3h12v18h-2V5H8v16H6V3zm5 10h2v8h-2v-8z");
+  const I_UNDERLAY = icon("M6 2h9l3 3v17H6V2zm9 1.5V6h2.5L15 3.5zM8 9h8v2H8V9zm0 4h8v2H8v-2z");
+  const I_CABINET = icon("M4 6h16v14H4V6zm2 2v3h12V8H6zm0 5v5h5v-5H6zm7 0v5h5v-5h-5z");
+  const I_GRID2D = icon("M4 4h16v16H4V4zm2 2v4h4V6H6zm6 0v4h6V6h-6zM6 12v6h4v-6H6zm6 0v6h6v-6h-6z");
+  const I_DUP = icon("M7 7h10v10H7V7zm-3 3h2v10h10v2H4V10z");
+  const I_TRASH = icon("M9 3h6l1 2h5v2H3V5h5l1-2zm1 6h2v10h-2V9zm4 0h2v10h-2V9z");
+  const I_EXPORT = icon("M12 3v10l3-3 1.4 1.4L12 16.8 7.6 11.4 9 10l3 3V3h0zM5 19h14v2H5v-2z");
+  const I_COPY = icon("M8 7h11v14H8V7zM5 3h11v2H7v12H5V3z");
+  const I_RESET = icon("M12 6V3l-4 4 4 4V8c2.8 0 5 2.2 5 5a5 5 0 1 1-9.8-1H5.1A7 7 0 1 0 12 6z");
+  const I_VIEW = icon("M12 5c5.5 0 9.5 5.5 9.5 7s-4 7-9.5 7S2.5 14.5 2.5 12 6.5 5 12 5zm0 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z");
+  const I_DEBUG = icon("M4 12h16v2H4v-2zm7-8h2v16h-2V4z");
+
+  const tb = createTopbar(args.ribbonEl);
+
+  const props = {
+    setTitle(title: string) {
+      args.propertiesEl.innerHTML = "";
+      const t = document.createElement("div");
+      t.className = "props-title";
+      t.textContent = title;
+      args.propertiesEl.appendChild(t);
+    },
+    section() {
+      const s = document.createElement("div");
+      s.className = "props-section";
+      args.propertiesEl.appendChild(s);
+      return s;
+    },
+    row(sectionEl: HTMLElement, label: string, inputEl: HTMLElement) {
+      const r = document.createElement("div");
+      r.className = "props-row";
+      const l = document.createElement("label");
+      l.textContent = label;
+      r.appendChild(l);
+      r.appendChild(inputEl);
+      sectionEl.appendChild(r);
+      return r;
+    }
+  };
+
+  const showNoProps = () => {
+    props.setTitle("Properties");
+    const s = props.section();
+    const p = document.createElement("div");
+    p.className = "muted";
+    p.textContent = mode === "layout" ? "Vyber objekt alebo nástroj." : "Properties sú dostupné iba v layout mode.";
+    s.appendChild(p);
+  };
+
+  const mountWallToolProps = () => {
+    props.setTitle("Wall");
+    const s = props.section();
+    const th = document.createElement("input");
+    th.type = "number";
+    th.step = "1";
+    th.value = String(wallDefault.thicknessMm);
+    props.row(s, "Thickness (mm)", th);
+    const just = document.createElement("select");
+    just.innerHTML = `
+      <option value="center">Center</option>
+      <option value="interior">Finish face: interior</option>
+      <option value="exterior">Finish face: exterior</option>
+    `;
+    just.value = wallDefault.justification;
+    props.row(s, "Justification", just);
+    const flip = document.createElement("button");
+    flip.type = "button";
+    flip.textContent = "Flip exterior";
+    flip.style.height = "34px";
+    props.row(s, "Exterior", flip);
+    const mat = document.createElement("select");
+    mat.innerHTML = `<option value="default">Default</option>`;
+    mat.value = wallDefault.materialId;
+    props.row(s, "Material", mat);
+    const hint = document.createElement("div");
+    hint.className = "muted";
+    hint.textContent = "Klikni 2 body v 2D. Shift = bez axis snap. Esc = stop chain.";
+    s.appendChild(hint);
+    th.addEventListener("change", () => {
+      wallDefault.thicknessMm = Math.max(10, Number(th.value) || wallDefault.thicknessMm);
+      th.value = String(wallDefault.thicknessMm);
+      if (wallDraw.preview) updateWallMesh(wallDraw.preview, wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+    });
+    just.addEventListener("change", () => {
+      wallDefault.justification =
+        just.value === "interior" ? "interior" : just.value === "exterior" ? "exterior" : "center";
+    });
+    flip.addEventListener("click", () => {
+      wallDefault.exteriorSign = wallDefault.exteriorSign === 1 ? -1 : 1;
+      setUnderlayStatus(`Wall: exterior ${wallDefault.exteriorSign === 1 ? "left" : "right"} of A→B.`);
+    });
+    mat.addEventListener("change", () => {
+      wallDefault.materialId = mat.value || "default";
+    });
+  };
+
+  const mountWallProps = (w: WallInstance) => {
+    props.setTitle(`Wall (${w.id})`);
+    const s = props.section();
+    const th = document.createElement("input");
+    th.type = "number";
+    th.step = "1";
+    th.value = String(w.params.thicknessMm);
+    props.row(s, "Thickness (mm)", th);
+    const just = document.createElement("select");
+    just.innerHTML = `
+      <option value="center">Center</option>
+      <option value="interior">Finish face: interior</option>
+      <option value="exterior">Finish face: exterior</option>
+    `;
+    just.value = w.params.justification ?? "center";
+    props.row(s, "Justification", just);
+    const flip = document.createElement("button");
+    flip.type = "button";
+    flip.textContent = "Flip exterior";
+    flip.style.height = "34px";
+    props.row(s, "Exterior", flip);
+    const mat = document.createElement("select");
+    mat.innerHTML = `<option value="default">Default</option>`;
+    mat.value = w.params.materialId;
+    props.row(s, "Material", mat);
+    const len = document.createElement("div");
+    len.className = "muted";
+    const dx = w.params.bMm.x - w.params.aMm.x;
+    const dz = w.params.bMm.z - w.params.aMm.z;
+    len.textContent = `Length: ${Math.round(Math.hypot(dx, dz))} mm`;
+    s.appendChild(len);
+    th.addEventListener("change", () => {
+      w.params.thicknessMm = Math.max(10, Number(th.value) || w.params.thicknessMm);
+      th.value = String(w.params.thicknessMm);
+      for (const ww of walls) rebuildWall(ww);
+      rebuildWallPlanMesh();
+    });
+    just.addEventListener("change", () => {
+      w.params.justification = just.value === "interior" ? "interior" : just.value === "exterior" ? "exterior" : "center";
+      rebuildWallPlanMesh();
+    });
+    flip.addEventListener("click", () => {
+      w.params.exteriorSign = (w.params.exteriorSign ?? 1) === 1 ? -1 : 1;
+      rebuildWallPlanMesh();
+      mountProps();
+    });
+    mat.addEventListener("change", () => {
+      w.params.materialId = mat.value || "default";
+      // only one material for now; keep hook for later
+    });
+  };
+
+  const mountModuleProps = (id: string) => {
+    const inst = findInstance(id);
+    if (!inst) return showNoProps();
+    props.setTitle(`Module (${inst.id})`);
+    const s = props.section();
+    const type = document.createElement("div");
+    type.className = "muted";
+    type.textContent = `Type: ${inst.params.type}`;
+    s.appendChild(type);
+    const pos = document.createElement("div");
+    pos.className = "muted";
+    pos.textContent = `Pos: ${Math.round(inst.root.position.x * 1000)}×${Math.round(inst.root.position.z * 1000)} mm`;
+    s.appendChild(pos);
+  };
+
+  const mountWindowProps = () => {
+    props.setTitle("Window");
+    const s = props.section();
+    const p = document.createElement("div");
+    p.className = "muted";
+    p.textContent = "Nastavenia okna zatiaľ zostávajú vpravo (TODO: presunúť do properties).";
+    s.appendChild(p);
+  };
+
+  const mountProps = () => {
+    if (mode !== "layout") return showNoProps();
+    if (layoutTool === "wall") return mountWallToolProps();
+    if (selectedWallIds.size + selectedInstanceIds.size > 1) {
+      args.propertiesEl.innerHTML = "";
+      const t = document.createElement("div");
+      t.className = "props-title";
+      t.textContent = "Properties";
+      args.propertiesEl.appendChild(t);
+      const s = document.createElement("div");
+      s.className = "props-section";
+      s.innerHTML = `<div class="muted">Selected: ${selectedWallIds.size} wall(s), ${selectedInstanceIds.size} module(s)</div>
+      <div class="muted" style="margin-top:6px;">Delete = remove selected</div>`;
+      args.propertiesEl.appendChild(s);
+      return;
+    }
+    if (selectedKind === "wall") {
+      const w = walls.find((x) => x.id === selectedWallId) ?? null;
+      if (w) return mountWallProps(w);
+      return showNoProps();
+    }
+    if (selectedKind === "window") return mountWindowProps();
+    if (selectedKind === "module" && selectedInstanceId) return mountModuleProps(selectedInstanceId);
+    showNoProps();
+  };
+
+  const g1 = tb.addGroup();
+  tb.toolButton(g1, {
+    title: "Select",
+    iconSvg: I_SELECT,
+    onClick: () => {
+      ensureLayoutMode();
+      layoutTool = "select";
+      wallDraw.active = false;
+      wallDraw.a = null;
+      wallDraw.chainStart = null;
+      wallDraw.segments = 0;
+      if (wallDraw.preview) {
+        layoutRoot.remove(wallDraw.preview);
+        wallDraw.preview.geometry.dispose();
+        (wallDraw.preview.material as THREE.Material).dispose();
+        wallDraw.preview = null;
+      }
+      wallSnapHud.style.display = "none";
+      setUnderlayStatus("");
+      mountProps();
+    }
+  });
+  tb.toolButton(g1, {
+    title: "Wall",
+    iconSvg: I_WALL,
+    onClick: () => {
+      ensureLayoutMode();
+      layoutTool = "wall";
+      wallDraw.active = false;
+      wallDraw.a = null;
+      if (wallDraw.preview) {
+        layoutRoot.remove(wallDraw.preview);
+        wallDraw.preview.geometry.dispose();
+        (wallDraw.preview.material as THREE.Material).dispose();
+        wallDraw.preview = null;
+      }
+      wallDraw.chainStart = null;
+      wallDraw.segments = 0;
+      view2d.checked = true;
+      setView2d(true);
+      selectedKind = null;
+      selectedWallId = null;
+      setInstanceSelected(null);
+      if (selectedWallBox) {
+        scene.remove(selectedWallBox);
+        selectedWallBox.geometry.dispose();
+        (selectedWallBox.material as THREE.Material).dispose();
+        selectedWallBox = null;
+      }
+      mountProps();
+    }
+  });
+  tb.toolButton(g1, {
+    title: "Debug",
+    iconSvg: I_DEBUG,
+    onClick: () => {
+      ensureLayoutMode();
+      wallDebugEnabled = !wallDebugEnabled;
+      rebuildWallPlanMesh();
+    }
+  });
+  tb.toolButton(g1, { title: "Window", iconSvg: I_WINDOW, onClick: () => (ensureLayoutMode(), addOrSelectWindow()) });
+  tb.toolButton(g1, { title: "Door (TODO)", iconSvg: I_DOOR, onClick: () => ensureLayoutMode() });
+
+  const g2 = tb.addGroup();
+  tb.toolButton(g2, { title: "Add drawer", iconSvg: I_CABINET, onClick: () => (ensureLayoutMode(), addInstance("drawer_low")) });
+  tb.toolButton(g2, { title: "Add shelves", iconSvg: I_CABINET, onClick: () => (ensureLayoutMode(), addInstance("shelves")) });
+  tb.toolButton(g2, { title: "Add corner", iconSvg: I_CABINET, onClick: () => (ensureLayoutMode(), addInstance("corner_shelf_lower")) });
+  tb.toolButton(g2, {
+    title: "2D",
+    iconSvg: I_GRID2D,
+    onClick: () => {
+      ensureLayoutMode();
+      view2d.checked = !view2d.checked;
+      setView2d(view2d.checked);
+    }
+  });
+  tb.toolButton(g2, {
+    title: "Duplicate",
+    iconSvg: I_DUP,
+    onClick: () => {
+      ensureLayoutMode();
+      if (!selectedInstanceId) return;
+      duplicateInstance(selectedInstanceId);
+    }
+  });
+  tb.toolButton(g2, {
+    title: "Delete",
+    iconSvg: I_TRASH,
+    onClick: () => {
+      ensureLayoutMode();
+      if (!selectedInstanceId) return;
+      deleteInstance(selectedInstanceId);
+    }
+  });
+
+  const g3 = tb.addGroup();
+  tb.panelButton(g3, {
+    title: "Underlay",
+    iconSvg: I_UNDERLAY,
+    buildPanel(panelEl) {
+      const row = (label: string, el: HTMLElement) => {
+        const wrap = document.createElement("div");
+        wrap.className = "row";
+        const l = document.createElement("label");
+        l.textContent = label;
+        wrap.appendChild(l);
+        wrap.appendChild(el);
+        panelEl.appendChild(wrap);
+      };
+
+      const file = document.createElement("input");
+      file.type = "file";
+      file.accept = ".png,.pdf,image/png,application/pdf";
+      row("Upload", file);
+
+      const importScale = document.createElement("input");
+      importScale.type = "number";
+      importScale.step = "0.1";
+      importScale.min = "0.001";
+      importScale.value = "1";
+      row("Import scale (x)", importScale);
+
+      const opacity = document.createElement("input");
+      opacity.type = "range";
+      opacity.min = "0";
+      opacity.max = "1";
+      opacity.step = "0.01";
+      opacity.value = String(underlayState.opacity);
+      row("Opacity", opacity);
+
+      const rot = document.createElement("input");
+      rot.type = "number";
+      rot.step = "1";
+      rot.value = String(underlayState.rotationDeg);
+      row("Rotate (deg)", rot);
+
+      const offX = document.createElement("input");
+      offX.type = "number";
+      offX.step = "1";
+      offX.value = String(underlayState.offsetMm.x);
+      row("Offset X (mm)", offX);
+
+      const offZ = document.createElement("input");
+      offZ.type = "number";
+      offZ.step = "1";
+      offZ.value = String(underlayState.offsetMm.z);
+      row("Offset Z (mm)", offZ);
+
+      const known = document.createElement("input");
+      known.type = "number";
+      known.step = "1";
+      known.value = String(underlayCal.knownMm);
+      row("Calibrate (mm)", known);
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      panelEl.appendChild(actions);
+
+      const calBtn = document.createElement("button");
+      calBtn.type = "button";
+      calBtn.textContent = "Calibrate";
+      actions.appendChild(calBtn);
+
+      const resetScaleBtn = document.createElement("button");
+      resetScaleBtn.type = "button";
+      resetScaleBtn.textContent = "Reset scale";
+      actions.appendChild(resetScaleBtn);
+
+      const removeBtn = document.createElement("button");
+      removeBtn.type = "button";
+      removeBtn.textContent = "Remove";
+      actions.appendChild(removeBtn);
+
+      underlayStatusEl = document.createElement("div");
+      underlayStatusEl.className = "muted";
+      underlayStatusEl.style.marginTop = "8px";
+      underlayStatusEl.textContent = "Upload PDF/PNG and calibrate 1:1.";
+      panelEl.appendChild(underlayStatusEl);
+
+      file.addEventListener("change", async () => {
+        ensureLayoutMode();
+        const f = file.files?.[0] ?? null;
+        if (!f) return;
+        const scalePrompt = window.prompt("Mierka pri importe (x)", importScale.value);
+        if (scalePrompt !== null && scalePrompt.trim() !== "") importScale.value = scalePrompt.trim();
+        const uploadScale = Math.max(0.001, Number(importScale.value) || 1);
+        setUnderlayStatus("Loading...");
+        try {
+          const res = await loadUnderlayToCanvas(f);
+          setUnderlayFromCanvas(res.canvas, res.name, res.kind);
+          underlayState.scale = uploadScale;
+          const t = ctl().target;
+          underlayState.offsetMm = { x: Math.round(t.x * 1000), z: Math.round(t.z * 1000) };
+          updateUnderlayTransform();
+          opacity.value = String(underlayState.opacity);
+          rot.value = String(underlayState.rotationDeg);
+          offX.value = String(underlayState.offsetMm.x);
+          offZ.value = String(underlayState.offsetMm.z);
+          setUnderlayStatus(`Underlay (${res.kind.toUpperCase()}): ${res.name}`);
+        } catch (e) {
+          setUnderlayStatus(`Error: ${(e as Error).message}`);
+        } finally {
+          file.value = "";
+        }
+      });
+
+      opacity.addEventListener("input", () => {
+        underlayState.opacity = Math.min(1, Math.max(0, Number(opacity.value) || 0));
+        updateUnderlayTransform();
+      });
+
+      rot.addEventListener("change", () => {
+        underlayState.rotationDeg = Number(rot.value) || 0;
+        updateUnderlayTransform();
+      });
+
+      offX.addEventListener("change", () => {
+        underlayState.offsetMm.x = Number(offX.value) || 0;
+        updateUnderlayTransform();
+      });
+
+      offZ.addEventListener("change", () => {
+        underlayState.offsetMm.z = Number(offZ.value) || 0;
+        updateUnderlayTransform();
+      });
+
+      calBtn.addEventListener("click", () => {
+        ensureLayoutMode();
+        if (!underlayMesh.visible) {
+          setUnderlayStatus("Upload underlay first.");
+          return;
+        }
+        underlayCal.knownMm = Math.max(1, Number(known.value) || 1);
+        underlayCal.active = true;
+        underlayCal.first = null;
+        setUnderlayStatus("Calibrate: click first point...");
+      });
+
+      resetScaleBtn.addEventListener("click", () => {
+        ensureLayoutMode();
+        underlayState.scale = 1;
+        updateUnderlayTransform();
+        setUnderlayStatus("Scale reset.");
+      });
+
+      removeBtn.addEventListener("click", () => {
+        ensureLayoutMode();
+        clearUnderlay();
+        setUnderlayStatus("Underlay removed.");
+      });
+    }
+  });
+
+  const g4 = tb.addGroup();
+  tb.toolButton(g4, { title: "Reset defaults", iconSvg: I_RESET, onClick: () => args.resetBtn.click() });
+  tb.toolButton(g4, { title: "Export JSON", iconSvg: I_EXPORT, onClick: () => args.exportBtn.click() });
+  tb.toolButton(g4, { title: "Copy export", iconSvg: I_COPY, onClick: () => args.copyBtn.click() });
+  tb.toolButton(g4, {
+    title: "Reset view",
+    iconSvg: I_VIEW,
+    onClick: () => (args.viewerEl.querySelector("#resetViewBtn") as HTMLButtonElement | null)?.click()
+  });
+
   modeSelect.addEventListener("change", () => {
     const next = modeSelect.value === "layout" ? "layout" : "build";
     setMode(next);
@@ -753,31 +2682,72 @@ export function startApp(args: AppArgs) {
     }
 
     const inst = id ? findInstance(id) : null;
-    if (!inst) {
-      instanceEditorHost.innerHTML = "";
-      return;
-    }
-
+    if (!inst) return;
     selectedInstanceBox = new THREE.BoxHelper(inst.root, 0x3ddc97);
     selectedInstanceBox.name = "instanceSelectionBox";
     scene.add(selectedInstanceBox);
-
-    mountInstanceControls(inst);
   }
 
-  function setSelectedModule(id: string | null) {
-    selectedKind = id ? "module" : null;
-    windowEditorHost.style.display = "none";
-    instanceEditorHost.style.display = "";
-    setInstanceSelected(id);
-  }
+    function setSelectedModule(id: string | null) {
+      if (layoutTool !== "wall") layoutTool = "select";
+      selectedKind = id ? "module" : null;
+      selectedInstanceId = id;
+      selectedInstanceIds.clear();
+      if (id) selectedInstanceIds.add(id);
+      selectedWallId = null;
+      selectedWallIds.clear();
+      setInstanceSelected(id);
+      mountProps();
+    }
 
   function setSelectedWindow() {
+    if (layoutTool !== "wall") layoutTool = "select";
     selectedKind = "window";
+    selectedWallId = null;
     setInstanceSelected(null);
-    instanceEditorHost.style.display = "none";
-    windowEditorHost.style.display = "";
-    mountWindowControls();
+    mountProps();
+  }
+
+  function setSelectedWall(id: string | null) {
+    if (layoutTool !== "wall") layoutTool = "select";
+    selectedKind = id ? "wall" : null;
+    selectedWallId = id;
+    selectedWallIds.clear();
+    if (id) selectedWallIds.add(id);
+    setInstanceSelected(null);
+    selectedInstanceIds.clear();
+
+    if (selectedWallBox) {
+      scene.remove(selectedWallBox);
+      selectedWallBox.geometry.dispose();
+      (selectedWallBox.material as THREE.Material).dispose();
+      selectedWallBox = null;
+    }
+
+    const w = id ? walls.find((x) => x.id === id) ?? null : null;
+    if (!w) {
+      mountProps();
+      return;
+    }
+
+    selectedWallBox = new THREE.BoxHelper(w.root, 0x3ddc97);
+    selectedWallBox.name = "wallSelectionBox";
+    scene.add(selectedWallBox);
+    mountProps();
+  }
+
+    function deleteWall(id: string) {
+      const idx = walls.findIndex((x) => x.id === id);
+      if (idx < 0) return;
+      const w = walls[idx];
+    removeWall(w);
+
+    if (selectedWallId === id) {
+      setSelectedWall(null);
+    }
+
+    // keep properties in sync
+    mountProps();
   }
 
   function createWindow(defaultWall: WallId = "back") {
@@ -1246,7 +3216,17 @@ export function startApp(args: AppArgs) {
       (windowInst.outline.material as THREE.LineBasicMaterial).opacity = enabled ? 0.98 : 0.75;
       windowInst.outline.visible = true;
     }
-  }
+
+      // Walls: render merged 2D mesh in plan view for clean joins.
+      wallPlanGroup.visible = enabled;
+      if (enabled) {
+        rebuildWallPlanMesh();
+        const hasMerged = !!wallPlanUnionMesh;
+        for (const w of walls) w.mesh.visible = !hasMerged;
+      } else {
+        for (const w of walls) w.mesh.visible = true;
+      }
+    }
 
   function setMode(next: AppMode) {
     mode = next;
@@ -1256,6 +3236,19 @@ export function startApp(args: AppArgs) {
     layoutUi.style.display = isLayout ? "" : "none";
     partsBuildHost.style.display = isLayout ? "none" : "";
     partsLayoutHost.style.display = isLayout ? "" : "none";
+
+    args.propertiesEl.hidden = !isLayout;
+    if (!isLayout) {
+      layoutTool = "select";
+      wallDraw.active = false;
+      wallDraw.a = null;
+      if (wallDraw.preview) {
+        layoutRoot.remove(wallDraw.preview);
+        wallDraw.preview.geometry.dispose();
+        (wallDraw.preview.material as THREE.Material).dispose();
+        wallDraw.preview = null;
+      }
+    }
 
     // Disable measuring in layout (for now).
     if (isLayout) {
@@ -1276,15 +3269,23 @@ export function startApp(args: AppArgs) {
       setView2d(view2d.checked);
       updateLayoutPanel();
       if (selectedKind === "window") setSelectedWindow();
+      else if (selectedKind === "wall") setSelectedWall(selectedWallId);
       else setSelectedModule(selectedInstanceId);
+
+      // Hide selection editors in right panel (use properties panel on the left).
+      windowEditorHost.style.display = "none";
+      instanceEditorHost.style.display = "none";
+      mountProps();
     } else {
       setView2d(false);
       selectedKind = null;
+      selectedWallId = null;
       windowEditorHost.style.display = "none";
       instanceEditorHost.style.display = "";
       setInstanceSelected(null);
       mountControls();
       rebuild();
+      showNoProps();
     }
   }
 
@@ -1572,11 +3573,13 @@ export function startApp(args: AppArgs) {
       cameraTarget,
       environment: {
         hdriPath: hdri.id,
-        hdriStrength: hdri.envIntensity,
+        hdriStrength: 5,
         hdriBackground: hdri.background,
-        hdriBackgroundStrength: hdri.backgroundIntensity
+        hdriBackgroundStrength: 5,
+        hdriRotationDeg: 60
       },
-      lighting: { sunDirection, sunStrength: Math.max(0.1, daylightIntensity * 2.2), sunAngle: 0.5 },
+      colorManagement: { viewTransform: "AgX", exposure: 0.5, look: "Medium High Contrast" },
+      lighting: { sunDirection, sunStrength: 5, sunAngle: 30 },
       window: { opening, daylightIntensity },
       includeInvisible: false
     });
@@ -1660,7 +3663,37 @@ export function startApp(args: AppArgs) {
   });
   ro.observe(args.viewerEl);
 
+  // Prevent browser context menu so right-drag marquee works.
+  renderer.domElement.addEventListener("contextmenu", (ev) => {
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select") {
+      ev.preventDefault();
+    }
+  });
+
   renderer.domElement.addEventListener("pointerdown", (ev) => {
+    // Marquee selection in 2D layout select tool (right button).
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && ev.button === 2 && !measureState.enabled) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      marquee.active = true;
+      marquee.startX = ev.clientX - rect.left;
+      marquee.startY = ev.clientY - rect.top;
+      marquee.mode = "contain";
+      marqueeEl.style.border = "1px solid rgba(92, 140, 255, 0.95)";
+      marqueeEl.style.background = "rgba(92, 140, 255, 0.10)";
+      marqueeEl.style.left = `${marquee.startX}px`;
+      marqueeEl.style.top = `${marquee.startY}px`;
+      marqueeEl.style.width = "0px";
+      marqueeEl.style.height = "0px";
+      marqueeEl.style.display = "block";
+      try {
+        renderer.domElement.setPointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      ev.preventDefault();
+      return;
+    }
+
     const rect = renderer.domElement.getBoundingClientRect();
     const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
     const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
@@ -1669,10 +3702,169 @@ export function startApp(args: AppArgs) {
     raycaster.setFromCamera(pointerNdc, cam());
 
     if (mode === "layout") {
+      if (underlayCal.active) {
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+        if (!underlayCal.first) {
+          underlayCal.first = hitPoint.clone();
+          setUnderlayStatus("Kalibrácia: klikni druhý bod...");
+          return;
+        }
+
+        const a = underlayCal.first;
+        const b = hitPoint;
+        const distM = Math.hypot(b.x - a.x, b.z - a.z);
+        const desiredM = Math.max(1, underlayCal.knownMm) / 1000;
+        if (distM > 1e-6 && underlayMesh.visible) {
+          const factor = desiredM / distM;
+          underlayState.scale *= factor;
+          updateUnderlayTransform();
+          setUnderlayStatus(`Kalibrácia OK: ${underlayCal.knownMm} mm`);
+        } else {
+          setUnderlayStatus("Kalibrácia zlyhala (nulová vzdialenosť).");
+        }
+
+        underlayCal.active = false;
+        underlayCal.first = null;
+        return;
+      }
+
+      if (layoutTool === "wall") {
+        // Place wall by 2 clicks on ground (XZ).
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+        const rect2 = renderer.domElement.getBoundingClientRect();
+        const snapped = snapPoint2D(hitPoint, rect2, cam());
+        const shouldAxisSnap = !ev.shiftKey && snapped.kind === "none";
+
+      if (!wallDraw.active) {
+        wallDraw.active = true;
+        wallDraw.segments = wallDraw.segments || 0;
+        const start = snapped.kind !== "none" ? snapped.point : hitPoint.clone();
+        const startMm = { x: Math.round(start.x * 1000), z: Math.round(start.z * 1000) };
+        wallDraw.a = new THREE.Vector3(startMm.x / 1000, 0, startMm.z / 1000);
+        if (!wallDraw.chainStart) wallDraw.chainStart = wallDraw.a.clone();
+        wallDraw.hoverB = wallDraw.a.clone();
+        wallDraw.typedMm = "";
+        wallTypedHud.style.display = "none";
+        if (!wallDraw.preview) {
+          wallDraw.preview = makeWallPreviewMesh(wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+          wallDraw.preview.name = "wallPreview";
+          layoutRoot.add(wallDraw.preview);
+        }
+        updateWallMesh(wallDraw.preview, wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+        setUnderlayStatus("Wall: druhý bod... (píš mm + Enter, Shift = bez axis snap, Esc = stop)");
+        return;
+      }
+
+        const a = wallDraw.a;
+        if (!a) return;
+        const b0 = snapped.kind !== "none" ? snapped.point : hitPoint.clone();
+        const b = shouldAxisSnap ? snapAxisXZ(a, b0, true) : b0;
+        const bMm = { x: Math.round(b.x * 1000), z: Math.round(b.z * 1000) };
+        const bExact = new THREE.Vector3(bMm.x / 1000, 0, bMm.z / 1000);
+
+        // Snap to chain start when closing loop.
+        const closeTolM = 0.03;
+        const cs = wallDraw.chainStart;
+        const closes =
+          !!cs && wallDraw.segments >= 2 && Math.hypot(bExact.x - cs.x, bExact.z - cs.z) <= closeTolM;
+        const end = closes && cs ? cs.clone() : bExact;
+
+        // Finish wall
+        const w = addWall(a, end, wallDefault.thicknessMm);
+        autoJoinAtMmPoint(w.params.aMm);
+        autoJoinAtMmPoint(w.params.bMm);
+        wallDraw.segments += 1;
+
+        if (closes) {
+          wallDraw.active = false;
+          wallDraw.a = null;
+          wallDraw.chainStart = null;
+          wallDraw.segments = 0;
+          if (wallDraw.preview) {
+            layoutRoot.remove(wallDraw.preview);
+            wallDraw.preview.geometry.dispose();
+            (wallDraw.preview.material as THREE.Material).dispose();
+            wallDraw.preview = null;
+          }
+          setUnderlayStatus("Wall: chain closed.");
+          return;
+        }
+
+        // Continue chain from end point.
+        wallDraw.active = true;
+        wallDraw.a = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+        wallDraw.hoverB = wallDraw.a.clone();
+        wallDraw.typedMm = "";
+        wallTypedHud.style.display = "none";
+        updateWallMesh(wallDraw.preview!, wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+        setUnderlayStatus("Wall: ďalší bod... (píš mm + Enter, Shift = bez axis snap, Esc = stop)");
+        // Keep wall tool active; just show properties for the placed wall.
+        selectedKind = "wall";
+        selectedWallId = w.id;
+        mountProps();
+        return;
+      }
+
       if (measureState.enabled) return;
+
+      // 2D wall selection without raycasting (walls are hidden in 2D; plan mesh is merged).
+      if (viewMode === "2d" && layoutTool === "select" && ev.button === 0) {
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+        const pMm = toMmPoint(hitPoint);
+        const rect2 = renderer.domElement.getBoundingClientRect();
+        const mouse = { x: ev.clientX - rect2.left, y: ev.clientY - rect2.top };
+
+        const pointInPoly = (p: { x: number; z: number }, poly: Array<{ x: number; z: number }>) => {
+          let inside = false;
+          for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+            const xi = poly[i].x, zi = poly[i].z;
+            const xj = poly[j].x, zj = poly[j].z;
+            const intersect = (zi > p.z) !== (zj > p.z) && p.x < ((xj - xi) * (p.z - zi)) / (zj - zi + 1e-12) + xi;
+            if (intersect) inside = !inside;
+          }
+          return inside;
+        };
+
+        // Prefer polygon hit-testing when available.
+        let bestPoly: { id: string; px: number } | null = null;
+        const pW = { x: pMm.x / 1000, z: pMm.z / 1000 };
+        for (const [id, poly] of wallSolvedOutlines) {
+          if (poly.length < 3) continue;
+          if (!pointInPoly(pW, poly)) continue;
+          // score by distance to mouse from wall midpoint (stable pick)
+          const w = walls.find((x) => x.id === id) ?? null;
+          const mid = w ? new THREE.Vector3((w.params.aMm.x + w.params.bMm.x) / 2000, 0, (w.params.aMm.z + w.params.bMm.z) / 2000) : new THREE.Vector3(pW.x, 0, pW.z);
+          const s = worldToScreen(mid, cam(), rect2);
+          const px = Math.hypot(s.x - mouse.x, s.y - mouse.y);
+          if (!bestPoly || px < bestPoly.px) bestPoly = { id, px };
+        }
+        if (bestPoly) {
+          setSelectedWall(bestPoly.id);
+          return;
+        }
+
+        let best: { id: string; px: number } | null = null;
+        for (const w of walls) {
+          const closest = pointOnWallAxisMm(w, pMm);
+          if (!Number.isFinite(closest.distMm)) continue;
+          const cp = new THREE.Vector3(closest.closest.x / 1000, 0, closest.closest.z / 1000);
+          const s = worldToScreen(cp, cam(), rect2);
+          const px = Math.hypot(s.x - mouse.x, s.y - mouse.y);
+          if (!best || px < best.px) best = { id: w.id, px };
+        }
+
+        if (best && best.px <= 10) {
+          setSelectedWall(best.id);
+          return;
+        }
+      }
 
       const picks = instances.map((i) => i.pick);
       if (windowInst) picks.push(windowInst.pick);
+      for (const w of walls) picks.push(w.mesh);
       const hits = raycaster.intersectObjects(picks, false);
       const first = hits[0]?.object as THREE.Mesh | undefined;
       const kind = (first?.userData?.kind as string | undefined) ?? "module";
@@ -1697,7 +3889,17 @@ export function startApp(args: AppArgs) {
       }
 
       const id = (first?.userData?.instanceId as string | undefined) ?? null;
+      const wallId = (first?.userData?.wallId as string | undefined) ?? null;
+      if (kind === "wall") {
+        if (!wallId) {
+          setSelectedWall(null);
+          return;
+        }
+        setSelectedWall(wallId);
+        return;
+      }
       if (!id) {
+        setSelectedWall(null);
         setSelectedModule(null);
         clearWindowLightIfMissing();
         return;
@@ -1752,6 +3954,162 @@ export function startApp(args: AppArgs) {
 
   // Live hover + preview (SketchUp-like)
   renderer.domElement.addEventListener("pointermove", (ev) => {
+    // Wall edit drag (2D, select tool)
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && wallEditHud.drag) {
+      const d = wallEditHud.drag;
+      const w = walls.find((x) => x.id === d.wallId) ?? null;
+      if (!w) return;
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      pointerNdc.set(x, y);
+      raycaster.setFromCamera(pointerNdc, cam());
+      const hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+
+      if (d.kind === "move") {
+        const dx = hitPoint.x - d.startWorld.x;
+        const dz = hitPoint.z - d.startWorld.z;
+        const nextA = { x: Math.round(d.startA.x + dx * 1000), z: Math.round(d.startA.z + dz * 1000) };
+        const nextB = { x: Math.round(d.startB.x + dx * 1000), z: Math.round(d.startB.z + dz * 1000) };
+        w.params.aMm = nextA;
+        w.params.bMm = nextB;
+
+        const touched = new Set<string>();
+        touched.add(w.id);
+        for (const c of d.connectedA) {
+          const ow = walls.find((x) => x.id === c.wallId) ?? null;
+          if (!ow) continue;
+          if (c.which === "a") ow.params.aMm = nextA;
+          else ow.params.bMm = nextA;
+          touched.add(ow.id);
+        }
+        for (const c of d.connectedB) {
+          const ow = walls.find((x) => x.id === c.wallId) ?? null;
+          if (!ow) continue;
+          if (c.which === "a") ow.params.aMm = nextB;
+          else ow.params.bMm = nextB;
+          touched.add(ow.id);
+        }
+
+        for (const id of touched) {
+          const ww = walls.find((x) => x.id === id) ?? null;
+          if (ww) rebuildWall(ww);
+        }
+        rebuildWallPlanMesh();
+        return;
+      }
+
+      const which = d.kind;
+      const other = which === "a" ? fromMmPoint(d.startB) : fromMmPoint(d.startA);
+      const snapped = snapPoint2D(hitPoint, rect, cam());
+      const shouldAxisSnap = !ev.shiftKey && snapped.kind === "none";
+      const p0 = snapped.kind !== "none" ? snapped.point : hitPoint;
+      const p = shouldAxisSnap ? snapAxisXZ(other, p0, true) : p0;
+      const pMm = toMmPoint(p);
+
+      if (which === "a") w.params.aMm = pMm;
+      else w.params.bMm = pMm;
+
+      const touched = new Set<string>();
+      touched.add(w.id);
+      const connected = which === "a" ? d.connectedA : d.connectedB;
+      for (const c of connected) {
+        const ow = walls.find((x) => x.id === c.wallId) ?? null;
+        if (!ow) continue;
+        if (c.which === "a") ow.params.aMm = pMm;
+        else ow.params.bMm = pMm;
+        touched.add(ow.id);
+      }
+      for (const id of touched) {
+        const ww = walls.find((x) => x.id === id) ?? null;
+        if (ww) rebuildWall(ww);
+      }
+      rebuildWallPlanMesh();
+      return;
+    }
+
+    if (marquee.active) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      marquee.mode = x >= marquee.startX ? "contain" : "touch";
+      if (marquee.mode === "contain") {
+        marqueeEl.style.border = "1px solid rgba(92, 140, 255, 0.95)";
+        marqueeEl.style.background = "rgba(92, 140, 255, 0.10)";
+      } else {
+        marqueeEl.style.border = "1px solid rgba(61, 220, 151, 0.95)";
+        marqueeEl.style.background = "rgba(61, 220, 151, 0.10)";
+      }
+      const x0 = Math.min(marquee.startX, x);
+      const y0 = Math.min(marquee.startY, y);
+      const x1 = Math.max(marquee.startX, x);
+      const y1 = Math.max(marquee.startY, y);
+      marqueeEl.style.left = `${x0}px`;
+      marqueeEl.style.top = `${y0}px`;
+      marqueeEl.style.width = `${Math.max(0, x1 - x0)}px`;
+      marqueeEl.style.height = `${Math.max(0, y1 - y0)}px`;
+    }
+
+    if (mode === "layout" && layoutTool === "wall" && wallDraw.active && wallDraw.a && wallDraw.preview) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      wallDraw.lastPointerPx.x = ev.clientX - rect.left;
+      wallDraw.lastPointerPx.y = ev.clientY - rect.top;
+      pointerNdc.set(x, y);
+      raycaster.setFromCamera(pointerNdc, cam());
+      const hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+      const snapped = snapPoint2D(hitPoint, rect, cam());
+      if (snapped.kind !== "none") {
+        const s = worldToScreen(snapped.point, cam(), rect);
+        wallSnapHud.style.left = `${s.x}px`;
+        wallSnapHud.style.top = `${s.y}px`;
+        wallSnapHud.style.display = "block";
+      } else {
+        wallSnapHud.style.display = "none";
+      }
+
+      const shouldAxisSnap = !ev.shiftKey && snapped.kind === "none";
+      const b0 = snapped.kind !== "none" ? snapped.point : hitPoint;
+      const b = shouldAxisSnap ? snapAxisXZ(wallDraw.a, b0, true) : b0;
+      wallDraw.hoverB = b.clone();
+      updateWallMesh(wallDraw.preview, wallDraw.a, b, wallDefault.thicknessMm);
+
+      if (wallDraw.typedMm.trim().length > 0) {
+        wallTypedHud.textContent = `${wallDraw.typedMm} mm`;
+        wallTypedHud.style.left = `${ev.clientX - rect.left}px`;
+        wallTypedHud.style.top = `${ev.clientY - rect.top}px`;
+        wallTypedHud.style.display = "block";
+      } else {
+        wallTypedHud.style.display = "none";
+      }
+      return;
+    }
+
+    if (mode === "layout" && layoutTool === "wall" && viewMode === "2d") {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      wallDraw.lastPointerPx.x = ev.clientX - rect.left;
+      wallDraw.lastPointerPx.y = ev.clientY - rect.top;
+      pointerNdc.set(x, y);
+      raycaster.setFromCamera(pointerNdc, cam());
+      const hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+      const snapped = snapPoint2D(hitPoint, rect, cam());
+      if (snapped.kind !== "none") {
+        const s = worldToScreen(snapped.point, cam(), rect);
+        wallSnapHud.style.left = `${s.x}px`;
+        wallSnapHud.style.top = `${s.y}px`;
+        wallSnapHud.style.display = "block";
+      } else {
+        wallSnapHud.style.display = "none";
+      }
+    }
+
     if (mode === "layout" && windowDragState.active && windowInst && windowDragState.wall) {
       const rect = renderer.domElement.getBoundingClientRect();
       const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1852,6 +4210,145 @@ export function startApp(args: AppArgs) {
 
   renderer.domElement.addEventListener("pointerup", (ev) => {
     if (mode !== "layout") return;
+
+    if (wallEditHud.drag && wallEditHud.drag.pointerId === ev.pointerId) {
+      const d = wallEditHud.drag;
+      wallEditHud.drag = null;
+      const w = walls.find((x) => x.id === d.wallId) ?? null;
+      if (w) {
+        autoJoinAtMmPoint(w.params.aMm);
+        autoJoinAtMmPoint(w.params.bMm);
+      }
+      rebuildWallPlanMesh();
+      mountProps();
+      try {
+        renderer.domElement.releasePointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (marquee.active) {
+      marquee.active = false;
+      marqueeEl.style.display = "none";
+
+      const rect = renderer.domElement.getBoundingClientRect();
+      const endX = ev.clientX - rect.left;
+      const endY = ev.clientY - rect.top;
+      const x0 = Math.min(marquee.startX, endX);
+      const y0 = Math.min(marquee.startY, endY);
+      const x1 = Math.max(marquee.startX, endX);
+      const y1 = Math.max(marquee.startY, endY);
+      const w = x1 - x0;
+      const h = y1 - y0;
+
+      // If it's a click-sized drag, let normal click selection handle it.
+      if (w >= 6 && h >= 6 && viewMode === "2d" && layoutTool === "select") {
+        const rectSel = { x0, y0, x1, y1 };
+        const contains = (b: { minX: number; minY: number; maxX: number; maxY: number }) =>
+          b.minX >= rectSel.x0 && b.maxX <= rectSel.x1 && b.minY >= rectSel.y0 && b.maxY <= rectSel.y1;
+        const overlaps = (b: { minX: number; minY: number; maxX: number; maxY: number }) =>
+          b.maxX >= rectSel.x0 && b.minX <= rectSel.x1 && b.maxY >= rectSel.y0 && b.minY <= rectSel.y1;
+
+        const wallBounds = (w: WallInstance) => {
+          const a = fromMmPoint(w.params.aMm);
+          const b = fromMmPoint(w.params.bMm);
+          const d = b.clone().sub(a);
+          const len = d.length();
+          if (len < 1e-8) {
+            const s = worldToScreen(a, cam(), rect);
+            return { minX: s.x, maxX: s.x, minY: s.y, maxY: s.y };
+          }
+          d.multiplyScalar(1 / len);
+          const n = new THREE.Vector3(-d.z, 0, d.x);
+          const h = Math.max(1, w.params.thicknessMm / 2) / 1000;
+          const p1 = a.clone().addScaledVector(n, h);
+          const p2 = a.clone().addScaledVector(n, -h);
+          const p3 = b.clone().addScaledVector(n, -h);
+          const p4 = b.clone().addScaledVector(n, h);
+          const s1 = worldToScreen(p1, cam(), rect);
+          const s2 = worldToScreen(p2, cam(), rect);
+          const s3 = worldToScreen(p3, cam(), rect);
+          const s4 = worldToScreen(p4, cam(), rect);
+          const xs = [s1.x, s2.x, s3.x, s4.x];
+          const ys = [s1.y, s2.y, s3.y, s4.y];
+          return {
+            minX: Math.min(...xs),
+            maxX: Math.max(...xs),
+            minY: Math.min(...ys),
+            maxY: Math.max(...ys)
+          };
+        };
+
+        const instBounds = (id: string) => {
+          const inst = findInstance(id);
+          if (!inst) return null;
+          const box = instanceWorldBox(inst);
+          const pts = [
+            new THREE.Vector3(box.min.x, 0, box.min.z),
+            new THREE.Vector3(box.min.x, 0, box.max.z),
+            new THREE.Vector3(box.max.x, 0, box.min.z),
+            new THREE.Vector3(box.max.x, 0, box.max.z)
+          ];
+          const ss = pts.map((p) => worldToScreen(p, cam(), rect));
+          const xs = ss.map((p) => p.x);
+          const ys = ss.map((p) => p.y);
+          return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+        };
+
+        const hitWalls: string[] = [];
+        for (const ww of walls) {
+          const b = wallBounds(ww);
+          const ok = marquee.mode === "contain" ? contains(b) : overlaps(b);
+          if (ok) hitWalls.push(ww.id);
+        }
+
+        const hitMods: string[] = [];
+        for (const inst of instances) {
+          const b = instBounds(inst.id);
+          if (!b) continue;
+          const ok = marquee.mode === "contain" ? contains(b) : overlaps(b);
+          if (ok) hitMods.push(inst.id);
+        }
+
+        // Apply multi-selection (Shift = add).
+        const nextWalls = new Set<string>(ev.shiftKey ? Array.from(selectedWallIds) : []);
+        const nextMods = new Set<string>(ev.shiftKey ? Array.from(selectedInstanceIds) : []);
+        for (const id of hitWalls) nextWalls.add(id);
+        for (const id of hitMods) nextMods.add(id);
+
+        // Pick primary (keep current if still selected when shift-adding).
+        let primaryWall = selectedWallId && nextWalls.has(selectedWallId) ? selectedWallId : null;
+        let primaryMod = selectedInstanceId && nextMods.has(selectedInstanceId) ? selectedInstanceId : null;
+        if (!primaryWall && !primaryMod) {
+          primaryWall = hitWalls[0] ?? null;
+          primaryMod = primaryWall ? null : hitMods[0] ?? null;
+        }
+
+        // Set primary selection for handles/props, then populate sets.
+        if (primaryWall) setSelectedWall(primaryWall);
+        else if (primaryMod) setSelectedModule(primaryMod);
+        else {
+          setSelectedWall(null);
+          setSelectedModule(null);
+        }
+
+        selectedWallIds.clear();
+        for (const id of nextWalls) selectedWallIds.add(id);
+        selectedInstanceIds.clear();
+        for (const id of nextMods) selectedInstanceIds.add(id);
+        mountProps();
+      }
+
+      try {
+        renderer.domElement.releasePointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
     if (windowDragState.active) {
       windowDragState.active = false;
       windowDragState.wall = null;
@@ -1942,6 +4439,189 @@ export function startApp(args: AppArgs) {
     controls.update();
   }
 
+  const updateWallEditHud = () => {
+    if (mode !== "layout" || viewMode !== "2d" || layoutTool !== "select") {
+      hideWallEditHud();
+      return;
+    }
+    if (measureState.enabled) {
+      hideWallEditHud();
+      return;
+    }
+    if (wallEditHud.drag) {
+      // keep HUD visible during drag
+    }
+
+    if (selectedKind !== "wall" || !selectedWallId) {
+      hideWallEditHud();
+      return;
+    }
+    const w = walls.find((x) => x.id === selectedWallId) ?? null;
+    if (!w) {
+      hideWallEditHud();
+      return;
+    }
+
+    const a = fromMmPoint(w.params.aMm);
+    const b = fromMmPoint(w.params.bMm);
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+    const rect = renderer.domElement.getBoundingClientRect();
+    const sa = worldToScreen(a, cam(), rect);
+    const sb = worldToScreen(b, cam(), rect);
+    const sm = worldToScreen(mid, cam(), rect);
+
+    const setLine = (el: HTMLDivElement, p0: { x: number; y: number }, p1: { x: number; y: number }) => {
+      const dx = p1.x - p0.x;
+      const dy = p1.y - p0.y;
+      const len = Math.max(0.001, Math.hypot(dx, dy));
+      el.style.left = `${p0.x}px`;
+      el.style.top = `${p0.y}px`;
+      el.style.width = `${len}px`;
+      el.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
+      el.style.display = "block";
+    };
+
+    wallEditHud.handleA.style.left = `${sa.x}px`;
+    wallEditHud.handleA.style.top = `${sa.y}px`;
+    wallEditHud.handleA.style.display = "block";
+
+    wallEditHud.handleB.style.left = `${sb.x}px`;
+    wallEditHud.handleB.style.top = `${sb.y}px`;
+    wallEditHud.handleB.style.display = "block";
+
+    wallEditHud.handleMid.style.left = `${sm.x}px`;
+    wallEditHud.handleMid.style.top = `${sm.y}px`;
+    wallEditHud.handleMid.style.display = "block";
+
+    const lenMm = Math.round(mmDist(w.params.aMm, w.params.bMm));
+    wallEditHud.label.textContent = `${lenMm} mm`;
+
+    // offset dimension line + label a bit perpendicular to wall direction in screen space
+    const dir = b.clone().sub(a);
+    const n = new THREE.Vector2(-dir.z, dir.x);
+    if (n.lengthSq() > 1e-8) n.normalize();
+
+    const off = { x: n.x * 18, y: n.y * 18 };
+    const da = { x: sa.x + off.x, y: sa.y + off.y };
+    const db = { x: sb.x + off.x, y: sb.y + off.y };
+    const dm = { x: sm.x + off.x, y: sm.y + off.y };
+
+    setLine(wallEditHud.lenLine, da, db);
+    setLine(wallEditHud.lenExtA, sa, da);
+    setLine(wallEditHud.lenExtB, sb, db);
+
+    wallEditHud.label.style.left = `${dm.x}px`;
+    wallEditHud.label.style.top = `${dm.y}px`;
+    if (wallEditHud.input.style.display !== "block") {
+      wallEditHud.label.style.display = "block";
+    } else {
+      wallEditHud.label.style.display = "none";
+    }
+
+    // Auto-dimension to nearest parallel wall (face-to-face)
+    wallEditHud.offsetRefWallId = null;
+    wallEditHud.offsetLine.style.display = "none";
+    wallEditHud.offsetTickA.style.display = "none";
+    wallEditHud.offsetTickB.style.display = "none";
+    wallEditHud.offsetLabel.style.display = "none";
+
+    const selDir = b.clone().sub(a);
+    if (selDir.lengthSq() > 1e-8) {
+      selDir.normalize();
+      const selN = new THREE.Vector3(-selDir.z, 0, selDir.x).normalize();
+      const tA = a.dot(selDir);
+      const tB = b.dot(selDir);
+      const minSel = Math.min(tA, tB);
+      const maxSel = Math.max(tA, tB);
+
+      let best: { w: WallInstance; dist: number; signed: number; overlapMin: number; overlapMax: number } | null = null;
+      for (const other of walls) {
+        if (other.id === w.id) continue;
+        const oa = fromMmPoint(other.params.aMm);
+        const ob = fromMmPoint(other.params.bMm);
+        const od = ob.clone().sub(oa);
+        if (od.lengthSq() < 1e-8) continue;
+        od.normalize();
+        const parallel = Math.abs(od.dot(selDir)) > 0.985;
+        if (!parallel) continue;
+
+        const toA = oa.dot(selDir);
+        const toB = ob.dot(selDir);
+        const minO = Math.min(toA, toB);
+        const maxO = Math.max(toA, toB);
+        const overlapMin = Math.max(minSel, minO);
+        const overlapMax = Math.min(maxSel, maxO);
+        if (overlapMax - overlapMin < 0.08) continue;
+
+        const oMid = oa.clone().add(ob).multiplyScalar(0.5);
+        const signed = oMid.clone().sub(mid).dot(selN);
+        const dist = Math.abs(signed);
+        if (!best || dist < best.dist) best = { w: other, dist, signed, overlapMin, overlapMax };
+      }
+
+      if (best) {
+        const ref = best.w;
+        wallEditHud.offsetRefWallId = ref.id;
+
+        const sign = best.signed >= 0 ? 1 : -1;
+        const refA = fromMmPoint(ref.params.aMm);
+        const refB = fromMmPoint(ref.params.bMm);
+        const tRefA = refA.dot(selDir);
+        const tRefB = refB.dot(selDir);
+        const overlapT = (best.overlapMin + best.overlapMax) / 2;
+
+        const selDen = tB - tA;
+        const refDen = tRefB - tRefA;
+        const uSel = Math.abs(selDen) < 1e-8 ? 0.5 : clamp((overlapT - tA) / selDen, 0, 1);
+        const uRef = Math.abs(refDen) < 1e-8 ? 0.5 : clamp((overlapT - tRefA) / refDen, 0, 1);
+
+        const pSel = a.clone().lerp(b, uSel);
+        const pRef = refA.clone().lerp(refB, uRef);
+
+        const tSel = w.params.thicknessMm / 1000;
+        const tRef = ref.params.thicknessMm / 1000;
+        const faceOffsetM = (tSel + tRef) / 2;
+        const faceDistM = Math.max(0, best.dist - faceOffsetM);
+        const faceDistMm = Math.round(faceDistM * 1000);
+
+        const p0 = pSel.clone().addScaledVector(selN, (tSel / 2) * sign);
+        const p1 = pRef.clone().addScaledVector(selN, (-tRef / 2) * sign);
+
+        const s0 = worldToScreen(p0, cam(), rect);
+        const s1 = worldToScreen(p1, cam(), rect);
+        setLine(wallEditHud.offsetLine, s0, s1);
+
+        const ddx = s1.x - s0.x;
+        const ddy = s1.y - s0.y;
+        const dlen = Math.max(0.001, Math.hypot(ddx, ddy));
+        const ux = ddx / dlen;
+        const uy = ddy / dlen;
+        const vx = -uy;
+        const vy = ux;
+        const tick = 6;
+        setLine(
+          wallEditHud.offsetTickA,
+          { x: s0.x - vx * tick, y: s0.y - vy * tick },
+          { x: s0.x + vx * tick, y: s0.y + vy * tick }
+        );
+        setLine(
+          wallEditHud.offsetTickB,
+          { x: s1.x - vx * tick, y: s1.y - vy * tick },
+          { x: s1.x + vx * tick, y: s1.y + vy * tick }
+        );
+
+        wallEditHud.offsetLabel.textContent = `${faceDistMm} mm`;
+        wallEditHud.offsetLabel.style.left = `${(s0.x + s1.x) / 2 + vx * 16}px`;
+        wallEditHud.offsetLabel.style.top = `${(s0.y + s1.y) / 2 + vy * 16}px`;
+        if (wallEditHud.offsetInput.style.display !== "block") {
+          wallEditHud.offsetLabel.style.display = "block";
+        } else {
+          wallEditHud.offsetLabel.style.display = "none";
+        }
+      }
+    }
+  };
+
   const tick = () => {
     const dt = Math.min(0.05, navClock.getDelta());
     applyKeyboardNav(dt);
@@ -1961,6 +4641,7 @@ export function startApp(args: AppArgs) {
     }
     for (const o of overlapBoxes) o.helper.setFromObject(o.mesh);
     updateMeasureLabels();
+    updateWallEditHud();
 
     const activeCam = cam();
     const isPhoto = renderMode === "photo_pathtrace" && ENABLE_PHOTO && activeCam instanceof THREE.PerspectiveCamera;
