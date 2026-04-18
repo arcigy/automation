@@ -237,7 +237,8 @@ export function startApp(args: AppArgs) {
   const underlayCal = {
     active: false,
     first: null as THREE.Vector3 | null,
-    knownMm: 1000
+    knownMm: 1000,
+    mode: "calibrate" as "calibrate" | "reference"
   };
 
   const roomBounds = {
@@ -1097,15 +1098,49 @@ export function startApp(args: AppArgs) {
         // Walls (single or multi)
         const wallIds = selectedWallIds.size > 0 ? Array.from(selectedWallIds) : selectedKind === "wall" && selectedWallId ? [selectedWallId] : [];
         if (wallIds.length > 0) {
+          const touched = new Set<string>();
+          const movedEnds = new Set<string>();
+          const moveEnd = (w: WallInstance, which: "a" | "b") => {
+            const k = `${w.id}:${which}`;
+            if (movedEnds.has(k)) return;
+            if (pinnedWallIds.has(w.id)) return;
+            if (which === "a") w.params.aMm = { x: w.params.aMm.x + dxMm, z: w.params.aMm.z + dzMm };
+            else w.params.bMm = { x: w.params.bMm.x + dxMm, z: w.params.bMm.z + dzMm };
+            movedEnds.add(k);
+            touched.add(w.id);
+          };
+
           for (const id of wallIds) {
             const w = walls.find((x) => x.id === id) ?? null;
             if (!w) continue;
-            w.params.aMm = { x: w.params.aMm.x + dxMm, z: w.params.aMm.z + dzMm };
-            w.params.bMm = { x: w.params.bMm.x + dxMm, z: w.params.bMm.z + dzMm };
-            rebuildWall(w);
+            if (pinnedWallIds.has(w.id)) continue;
+
+            const oldA = { x: w.params.aMm.x, z: w.params.aMm.z };
+            const oldB = { x: w.params.bMm.x, z: w.params.bMm.z };
+
+            // Move selected wall (translate both endpoints)
+            moveEnd(w, "a");
+            moveEnd(w, "b");
+
+            // Propagate corner moves: any wall endpoint connected to oldA/oldB follows.
+            for (const other of walls) {
+              if (other.id === w.id) continue;
+              if (pinnedWallIds.has(other.id)) continue;
+              const wa = wallEndpointWhich(other, oldA, wallJoinTolMm);
+              if (wa) moveEnd(other, wa);
+              const wb = wallEndpointWhich(other, oldB, wallJoinTolMm);
+              if (wb) moveEnd(other, wb);
+            }
+          }
+
+          for (const id of touched) {
+            const w = walls.find((x) => x.id === id) ?? null;
+            if (w) rebuildWall(w);
+          }
+          if (touched.size > 0) {
+            rebuildWallPlanMesh();
             moved = true;
           }
-          if (moved) rebuildWallPlanMesh();
         }
 
         // Modules (single or multi)
@@ -2750,6 +2785,11 @@ export function startApp(args: AppArgs) {
       calBtn.textContent = "Calibrate";
       actions.appendChild(calBtn);
 
+      const refScaleBtn = document.createElement("button");
+      refScaleBtn.type = "button";
+      refScaleBtn.textContent = "Reference scale";
+      actions.appendChild(refScaleBtn);
+
       const resetScaleBtn = document.createElement("button");
       resetScaleBtn.type = "button";
       resetScaleBtn.textContent = "Reset scale";
@@ -2891,9 +2931,22 @@ export function startApp(args: AppArgs) {
           return;
         }
         underlayCal.knownMm = Math.max(1, Number(known.value) || 1);
+        underlayCal.mode = "calibrate";
         underlayCal.active = true;
         underlayCal.first = null;
         setUnderlayStatus("Calibrate: click first point...");
+      });
+
+      refScaleBtn.addEventListener("click", () => {
+        ensureLayoutMode();
+        if (!underlayMesh.visible) {
+          setUnderlayStatus("Upload underlay first.");
+          return;
+        }
+        underlayCal.mode = "reference";
+        underlayCal.active = true;
+        underlayCal.first = null;
+        setUnderlayStatus("Reference scale: click first point...");
       });
 
       resetScaleBtn.addEventListener("click", () => {
@@ -4130,7 +4183,7 @@ export function startApp(args: AppArgs) {
         if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
         if (!underlayCal.first) {
           underlayCal.first = hitPoint.clone();
-          setUnderlayStatus("Kalibrácia: klikni druhý bod...");
+          setUnderlayStatus(underlayCal.mode === "reference" ? "Reference scale: click second point..." : "Kalibrácia: klikni druhý bod...");
           return;
         }
 
@@ -4235,8 +4288,19 @@ export function startApp(args: AppArgs) {
 
       // 2D wall selection without raycasting (walls are hidden in 2D; plan mesh is merged).
       if (viewMode === "2d" && layoutTool === "select" && ev.button === 0) {
-        const hitPoint = new THREE.Vector3();
-        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+        if (!underlayMesh.visible || underlayState.pinned) {
+          underlayCal.active = false;
+          underlayCal.first = null;
+          setUnderlayStatus("Underlay not available.");
+          return;
+        }
+
+        const hit = raycaster.intersectObject(underlayMesh, false)[0];
+        if (!hit) {
+          setUnderlayStatus("Click on underlay.");
+          return;
+        }
+        const hitPoint = hit.point.clone();
         const pMm = toMmPoint(hitPoint);
         const rect2 = renderer.domElement.getBoundingClientRect();
         const mouse = { x: ev.clientX - rect2.left, y: ev.clientY - rect2.top };
