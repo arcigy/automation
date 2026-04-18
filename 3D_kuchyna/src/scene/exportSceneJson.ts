@@ -7,6 +7,11 @@ export type SceneExportV1 = {
     coordinateSystem: "blender_z_up";
     warnings?: string[];
   };
+  colorManagement?: {
+    viewTransform: string;
+    exposure?: number;
+    look?: string;
+  };
   camera: {
     type: "perspective" | "orthographic";
     position: [number, number, number];
@@ -22,6 +27,7 @@ export type SceneExportV1 = {
     hdriStrength: number;
     hdriBackground?: boolean;
     hdriBackgroundStrength?: number;
+    hdriRotationDeg?: number;
   };
   lighting: {
     sunDirection: [number, number, number];
@@ -238,7 +244,14 @@ export type ExportSceneArgs = {
   scene: THREE.Scene;
   camera: THREE.Camera;
   cameraTarget?: THREE.Vector3;
-  environment?: { hdriPath: string | null; hdriStrength?: number; hdriBackground?: boolean; hdriBackgroundStrength?: number };
+  environment?: {
+    hdriPath: string | null;
+    hdriStrength?: number;
+    hdriBackground?: boolean;
+    hdriBackgroundStrength?: number;
+    hdriRotationDeg?: number;
+  };
+  colorManagement?: { viewTransform: string; exposure?: number; look?: string };
   lighting?: { sunDirection?: THREE.Vector3; sunStrength?: number; sunAngle?: number };
   window?: { opening?: { center: THREE.Vector3; inwardNormal: THREE.Vector3; width: number; height: number } | null; daylightIntensity?: number };
   includeInvisible?: boolean;
@@ -269,6 +282,8 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
   const hdriStrength = Math.max(0, toFiniteNumber(env.hdriStrength, 0.35));
   const hdriBackground = typeof env.hdriBackground === "boolean" ? env.hdriBackground : true;
   const hdriBackgroundStrength = Math.max(0, toFiniteNumber(env.hdriBackgroundStrength, hdriStrength));
+  const hdriRotationDeg =
+    typeof env.hdriRotationDeg === "number" && Number.isFinite(env.hdriRotationDeg) ? env.hdriRotationDeg : undefined;
 
   const sunDirectionThree = args.lighting?.sunDirection?.clone().normalize() ?? new THREE.Vector3(-0.35, -1, -0.2).normalize();
   const sunDirB = threeToBlenderVec3(sunDirectionThree.x, sunDirectionThree.y, sunDirectionThree.z);
@@ -369,6 +384,7 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
 
   return {
     meta: { unit: "meters", version: 1, coordinateSystem: "blender_z_up", ...(warnings.length ? { warnings } : {}) },
+    ...(args.colorManagement ? { colorManagement: args.colorManagement } : {}),
     camera: {
       type: cameraType,
       position: camTRS.position,
@@ -385,7 +401,8 @@ export function exportSceneToJson(args: ExportSceneArgs): SceneExportV1 {
       hdriPath: env.hdriPath ?? null,
       hdriStrength,
       hdriBackground,
-      hdriBackgroundStrength
+      hdriBackgroundStrength,
+      ...(hdriRotationDeg !== undefined ? { hdriRotationDeg } : {})
     },
     lighting: {
       sunDirection,

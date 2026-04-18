@@ -2,6 +2,8 @@ import "./style.css";
 import { startApp } from "./app";
 
 const viewer = document.getElementById("viewer");
+const ribbon = document.getElementById("ribbon");
+const properties = document.getElementById("properties");
 const form = document.getElementById("form");
 const errors = document.getElementById("errors");
 const parts = document.getElementById("parts");
@@ -16,6 +18,8 @@ const exportSceneBtn = document.getElementById("exportSceneBtn") as HTMLButtonEl
 
 if (
   !viewer ||
+  !ribbon ||
+  !properties ||
   !form ||
   !errors ||
   !parts ||
@@ -33,6 +37,8 @@ if (
 
 startApp({
   viewerEl: viewer,
+  ribbonEl: ribbon,
+  propertiesEl: properties,
   formEl: form,
   errorsEl: errors,
   partsEl: parts,

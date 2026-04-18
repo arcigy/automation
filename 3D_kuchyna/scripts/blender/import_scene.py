@@ -40,7 +40,7 @@ def _reset_scene():
     return scene
 
 
-def _set_render_defaults(scene, preview):
+def _set_render_defaults(scene, preview, color_mgmt_spec=None):
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
     scene.cycles.samples = 32 if preview else 256
@@ -78,8 +78,47 @@ def _set_render_defaults(scene, preview):
         except Exception:
             pass
 
+    if isinstance(color_mgmt_spec, dict):
+        vt = color_mgmt_spec.get("viewTransform")
+        look = color_mgmt_spec.get("look")
+        exposure = color_mgmt_spec.get("exposure")
 
-def _world_setup(scene, hdri_path, strength):
+        if isinstance(vt, str) and vt.strip():
+            vt_norm = vt.strip().lower()
+            if vt_norm in ["agx", "ag_x"]:
+                vt = "AgX"
+            try:
+                scene.view_settings.view_transform = vt
+            except Exception:
+                pass
+
+        if isinstance(look, str) and look.strip():
+            look = look.strip()
+            vt_now = None
+            try:
+                vt_now = str(scene.view_settings.view_transform or "")
+            except Exception:
+                vt_now = ""
+
+            look_candidates = [look]
+            if vt_now.lower() == "agx" and not look.lower().startswith("agx"):
+                look_candidates.insert(0, f"AgX - {look}")
+
+            for cand in look_candidates:
+                try:
+                    scene.view_settings.look = cand
+                    break
+                except Exception:
+                    continue
+
+        if isinstance(exposure, (int, float)) and math.isfinite(exposure):
+            try:
+                scene.view_settings.exposure = float(exposure)
+            except Exception:
+                pass
+
+
+def _world_setup(scene, hdri_path, strength, rotation_deg=0.0):
     world = scene.world or bpy.data.worlds.new("World")
     scene.world = world
     world.use_nodes = True
@@ -110,8 +149,20 @@ def _world_setup(scene, hdri_path, strength):
         p = os.path.abspath(hdri_path)
         if os.path.isfile(p):
             try:
+                texcoord = nodes.new(type="ShaderNodeTexCoord")
+                mapping = nodes.new(type="ShaderNodeMapping")
                 env = nodes.new(type="ShaderNodeTexEnvironment")
                 env.image = bpy.data.images.load(p, check_existing=True)
+
+                mapping.vector_type = "POINT"
+                try:
+                    rz = math.radians(float(rotation_deg))
+                except Exception:
+                    rz = 0.0
+                mapping.inputs["Rotation"].default_value[2] = rz
+
+                links.new(texcoord.outputs["Generated"], mapping.inputs["Vector"])
+                links.new(mapping.outputs["Vector"], env.inputs["Vector"])
                 links.new(env.outputs["Color"], bg_env.inputs["Color"])
                 links.new(env.outputs["Color"], bg_cam.inputs["Color"])
                 hdri_ok = True
@@ -575,7 +626,7 @@ def _setup_camera(scene, camera_spec):
     scene.camera = cam_obj
 
 
-def _setup_sun(scene, light_spec):
+def _setup_sun(scene, light_spec, window_opening=None):
     sun_data = bpy.data.lights.new(name="Sun", type="SUN")
     sun_obj = bpy.data.objects.new(name="Sun", object_data=sun_data)
     scene.collection.objects.link(sun_obj)
@@ -602,6 +653,17 @@ def _setup_sun(scene, light_spec):
 
     # Sun lights shine along -Z axis in object space.
     sun_obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
+    # Place the SUN so it visually comes "from outside" through the window.
+    # (SUN position doesn't affect lighting, but it helps debugging and consistency.)
+    loc = Vector((0.0, 0.0, 0.0))
+    if isinstance(window_opening, dict):
+        center = _as_vec3(window_opening.get("center"), (0.0, 0.0, 0.0))
+        dist = 25.0
+        if isinstance(light_spec, dict) and isinstance(light_spec.get("sunDistance"), (int, float)):
+            dist = float(max(0.1, light_spec.get("sunDistance")))
+        loc = center - direction * dist
+    sun_obj.location = loc
 
 
 def _setup_window_portal(scene, window_spec):
@@ -655,14 +717,28 @@ def main():
     payload = _read_json(json_path)
 
     scene = _reset_scene()
-    _set_render_defaults(scene, preview_out is not None)
+
+    cm = payload.get("colorManagement") if isinstance(payload, dict) else None
+    _set_render_defaults(scene, preview_out is not None, cm)
 
     env = payload.get("environment") if isinstance(payload, dict) else None
     hdri_path = env.get("hdriPath") if isinstance(env, dict) else None
     hdri_strength = env.get("hdriStrength") if isinstance(env, dict) else 0.35
     hdri_bg = env.get("hdriBackground") if isinstance(env, dict) else True
     hdri_bg_strength = env.get("hdriBackgroundStrength") if isinstance(env, dict) else None
-    _world_setup(scene, hdri_path, float(hdri_strength) if isinstance(hdri_strength, (int, float)) else 0.35)
+    hdri_rot = 0.0
+    if isinstance(env, dict):
+        for k in ["hdriRotationDeg", "hdriAngleDeg", "hdriAngle"]:
+            v = env.get(k)
+            if isinstance(v, (int, float)) and math.isfinite(v):
+                hdri_rot = float(v)
+                break
+    _world_setup(
+        scene,
+        hdri_path,
+        float(hdri_strength) if isinstance(hdri_strength, (int, float)) else 0.35,
+        hdri_rot,
+    )
     if isinstance(scene.world, bpy.types.World) and scene.world.use_nodes:
         try:
             nodes = scene.world.node_tree.nodes
@@ -676,8 +752,39 @@ def main():
             pass
 
     _setup_camera(scene, payload.get("camera") if isinstance(payload, dict) else {})
-    _setup_sun(scene, payload.get("lighting") if isinstance(payload, dict) else {})
-    _setup_window_portal(scene, payload.get("window") if isinstance(payload, dict) else None)
+
+    window_spec = payload.get("window") if isinstance(payload, dict) else None
+    windows_spec = payload.get("windows") if isinstance(payload, dict) else None
+    windows = []
+    if isinstance(windows_spec, list):
+        windows = [w for w in windows_spec if isinstance(w, dict)]
+    elif isinstance(window_spec, dict):
+        windows = [window_spec]
+
+    lighting_spec = payload.get("lighting") if isinstance(payload, dict) else {}
+    if not isinstance(lighting_spec, dict):
+        lighting_spec = {}
+
+    needs_dir = True
+    if isinstance(lighting_spec.get("sunDirection"), list) and len(lighting_spec.get("sunDirection")) == 3:
+        needs_dir = False
+    if needs_dir and len(windows) >= 1:
+        opening = windows[0].get("opening") if isinstance(windows[0], dict) else None
+        inward = _as_vec3(opening.get("inwardNormal") if isinstance(opening, dict) else None, (-0.3, -0.9, -0.2))
+        if inward.length > 1e-6:
+            inward.normalize()
+            lighting_spec = dict(lighting_spec)
+            lighting_spec["sunDirection"] = [float(inward.x), float(inward.y), float(inward.z)]
+
+    first_opening = None
+    if len(windows) >= 1 and isinstance(windows[0], dict):
+        opening = windows[0].get("opening")
+        if isinstance(opening, dict):
+            first_opening = opening
+
+    _setup_sun(scene, lighting_spec, first_opening)
+    for w in windows:
+        _setup_window_portal(scene, w)
 
     mat_cache = _ensure_material_cache()
     objs = payload.get("objects") if isinstance(payload, dict) else []

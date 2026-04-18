@@ -69,7 +69,7 @@ export function startApp(args: AppArgs) {
   let mode: AppMode = "build";
   let viewMode: "3d" | "2d" = "3d";
 
-  type LayoutTool = "select" | "wall";
+  type LayoutTool = "select" | "wall" | "align";
   let layoutTool: LayoutTool = "select";
 
   type RenderMode = "realtime" | "realtime_ssgi" | "photo_pathtrace";
@@ -457,6 +457,159 @@ export function startApp(args: AppArgs) {
     lastPointerPx: { x: 0, y: 0 }
   };
 
+  type AlignWallLine = "center" | "exterior" | "interior" | "endA" | "endB";
+  type AlignPickedLine = {
+    p: THREE.Vector3;
+    dir: THREE.Vector3;
+    label: string;
+    wallId: string;
+    wallLine: AlignWallLine;
+  };
+
+  const alignState = {
+    ref: null as AlignPickedLine | null
+  };
+
+  const distPxPointToSeg = (px: number, py: number, ax: number, ay: number, bx: number, by: number) => {
+    const abx = bx - ax;
+    const aby = by - ay;
+    const apx = px - ax;
+    const apy = py - ay;
+    const denom = abx * abx + aby * aby;
+    if (denom < 1e-9) return Math.hypot(apx, apy);
+    const t = Math.max(0, Math.min(1, (apx * abx + apy * aby) / denom));
+    const cx = ax + abx * t;
+    const cy = ay + aby * t;
+    return Math.hypot(px - cx, py - cy);
+  };
+
+  const pickAlignLineAt = (hitPoint: THREE.Vector3, mousePx: { x: number; y: number }, rect: DOMRect) => {
+    if (walls.length === 0) return null as AlignPickedLine | null;
+
+    let best: { line: AlignPickedLine; px: number } | null = null;
+
+    for (const w of walls) {
+      const refA = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+      const refB = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+      const just = w.params.justification ?? "center";
+      const s = (w.params.exteriorSign ?? 1) as 1 | -1;
+
+      const center = wallRefLineToCenterLine(refA, refB, w.params.thicknessMm, just, s);
+      const d = center.b.clone().sub(center.a);
+      if (d.lengthSq() < 1e-10) continue;
+      d.normalize();
+      const n = new THREE.Vector3(-d.z, 0, d.x);
+      const half = Math.max(10, w.params.thicknessMm) / 2000; // meters
+      const exteriorA = center.a.clone().addScaledVector(n, s * half);
+      const exteriorB = center.b.clone().addScaledVector(n, s * half);
+      const interiorA = center.a.clone().addScaledVector(n, -s * half);
+      const interiorB = center.b.clone().addScaledVector(n, -s * half);
+
+      const candidates: Array<{ kind: AlignWallLine; a: THREE.Vector3; b: THREE.Vector3; p: THREE.Vector3; dir: THREE.Vector3; label: string }> = [
+        { kind: "center", a: center.a, b: center.b, p: center.a, dir: d, label: `Wall ${w.id}: centerline` },
+        { kind: "exterior", a: exteriorA, b: exteriorB, p: exteriorA, dir: d, label: `Wall ${w.id}: exterior face` },
+        { kind: "interior", a: interiorA, b: interiorB, p: interiorA, dir: d, label: `Wall ${w.id}: interior face` }
+      ];
+
+      const endLen = Math.max(0.5, w.params.thicknessMm / 1000 + 0.25);
+      const endA1 = center.a.clone().addScaledVector(n, -endLen / 2);
+      const endA2 = center.a.clone().addScaledVector(n, endLen / 2);
+      const endB1 = center.b.clone().addScaledVector(n, -endLen / 2);
+      const endB2 = center.b.clone().addScaledVector(n, endLen / 2);
+      candidates.push({ kind: "endA", a: endA1, b: endA2, p: center.a, dir: n.clone().normalize(), label: `Wall ${w.id}: end A` });
+      candidates.push({ kind: "endB", a: endB1, b: endB2, p: center.b, dir: n.clone().normalize(), label: `Wall ${w.id}: end B` });
+
+      for (const c of candidates) {
+        const sa = worldToScreen(c.a, cam(), rect);
+        const sb = worldToScreen(c.b, cam(), rect);
+        const px = distPxPointToSeg(mousePx.x, mousePx.y, sa.x, sa.y, sb.x, sb.y);
+        if (!best || px < best.px) {
+          best = {
+            px,
+            line: { p: c.p.clone(), dir: c.dir.clone().normalize(), label: c.label, wallId: w.id, wallLine: c.kind }
+          };
+        }
+      }
+    }
+
+    if (!best) return null;
+    if (best.px > 12) return null;
+    return best.line;
+  };
+
+  const alignParallel = (a: AlignPickedLine, b: AlignPickedLine) => {
+    const dot = Math.abs(a.dir.clone().normalize().dot(b.dir.clone().normalize()));
+    return dot >= 0.999;
+  };
+
+  const alignShiftVec = (ref: AlignPickedLine, moving: AlignPickedLine) => {
+    const dir = ref.dir.clone().normalize();
+    const n = new THREE.Vector3(-dir.z, 0, dir.x);
+    const off = n.dot(moving.p.clone().sub(ref.p));
+    return n.multiplyScalar(-off);
+  };
+
+  const translateWallAndConnected = (w: WallInstance, dxMm: number, dzMm: number) => {
+    const oldA = { x: w.params.aMm.x, z: w.params.aMm.z };
+    const oldB = { x: w.params.bMm.x, z: w.params.bMm.z };
+
+    w.params.aMm = { x: w.params.aMm.x + dxMm, z: w.params.aMm.z + dzMm };
+    w.params.bMm = { x: w.params.bMm.x + dxMm, z: w.params.bMm.z + dzMm };
+
+    const touched = new Set<string>();
+    touched.add(w.id);
+
+    for (const other of walls) {
+      if (other.id === w.id) continue;
+      if (pinnedWallIds.has(other.id)) continue;
+      const wa = wallEndpointWhich(other, oldA, wallJoinTolMm);
+      if (wa) {
+        if (wa === "a") other.params.aMm = { x: oldA.x + dxMm, z: oldA.z + dzMm };
+        else other.params.bMm = { x: oldA.x + dxMm, z: oldA.z + dzMm };
+        touched.add(other.id);
+      }
+      const wb = wallEndpointWhich(other, oldB, wallJoinTolMm);
+      if (wb) {
+        if (wb === "a") other.params.aMm = { x: oldB.x + dxMm, z: oldB.z + dzMm };
+        else other.params.bMm = { x: oldB.x + dxMm, z: oldB.z + dzMm };
+        touched.add(other.id);
+      }
+    }
+
+    for (const id of touched) {
+      const ww = walls.find((x) => x.id === id) ?? null;
+      if (ww) rebuildWall(ww);
+    }
+    rebuildWallPlanMesh();
+  };
+
+  const moveWallEndpointAndConnected = (w: WallInstance, which: "a" | "b", dxMm: number, dzMm: number) => {
+    const oldP = which === "a" ? { x: w.params.aMm.x, z: w.params.aMm.z } : { x: w.params.bMm.x, z: w.params.bMm.z };
+    const nextP = { x: oldP.x + dxMm, z: oldP.z + dzMm };
+
+    const touched = new Set<string>();
+    touched.add(w.id);
+    if (which === "a") w.params.aMm = nextP;
+    else w.params.bMm = nextP;
+
+    for (const other of walls) {
+      if (other.id === w.id) continue;
+      if (pinnedWallIds.has(other.id)) continue;
+      const ww = wallEndpointWhich(other, oldP, wallJoinTolMm);
+      if (ww) {
+        if (ww === "a") other.params.aMm = nextP;
+        else other.params.bMm = nextP;
+        touched.add(other.id);
+      }
+    }
+
+    for (const id of touched) {
+      const ww = walls.find((x) => x.id === id) ?? null;
+      if (ww) rebuildWall(ww);
+    }
+    rebuildWallPlanMesh();
+  };
+
   function snapAxisXZ(a: THREE.Vector3, b: THREE.Vector3, enabled: boolean) {
     if (!enabled) return b;
     const dx = b.x - a.x;
@@ -604,6 +757,92 @@ export function startApp(args: AppArgs) {
     const dx = a.x - b.x;
     const dy = a.y - b.y;
     return dx * dx + dy * dy;
+  }
+
+  function distPointToSegment2(p: { x: number; y: number }, a: { x: number; y: number }, b: { x: number; y: number }) {
+    const abx = b.x - a.x;
+    const aby = b.y - a.y;
+    const apx = p.x - a.x;
+    const apy = p.y - a.y;
+    const denom = abx * abx + aby * aby;
+    const t = denom > 1e-9 ? Math.max(0, Math.min(1, (apx * abx + apy * aby) / denom)) : 0;
+    const cx = a.x + abx * t;
+    const cy = a.y + aby * t;
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    return { d2: dx * dx + dy * dy, t };
+  }
+
+  type PickedLine2D = {
+    wallId: string;
+    kind: "center" | "face" | "end";
+    a: THREE.Vector3;
+    b: THREE.Vector3;
+    p: THREE.Vector3; // closest point (for distance between parallels)
+    dir: THREE.Vector3;
+    label: string;
+  };
+
+  function pickWallLine2D(raw: THREE.Vector3, rect: DOMRect, camera: THREE.Camera, maxPx = 14): PickedLine2D | null {
+    const rawS = worldToScreen(raw, camera, rect);
+    let best: { pick: PickedLine2D; d2: number } | null = null;
+
+    const consider = (p: PickedLine2D) => {
+      const aS = worldToScreen(p.a, camera, rect);
+      const bS = worldToScreen(p.b, camera, rect);
+      const { d2, t } = distPointToSegment2(rawS, aS, bS);
+      if (d2 > maxPx * maxPx) return;
+      if (!best || d2 < best.d2) {
+        const dir = p.b.clone().sub(p.a);
+        if (dir.lengthSq() < 1e-10) return;
+        dir.normalize();
+        // closest point on the actual world segment (linear in XZ)
+        const closest = p.a.clone().lerp(p.b, t);
+        best = { pick: { ...p, p: closest, dir }, d2 };
+      }
+    };
+
+    for (const w of walls) {
+      // centerline (derived)
+      const refA = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+      const refB = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+      const just = w.params.justification ?? "center";
+      const s = (w.params.exteriorSign ?? 1) as 1 | -1;
+      const c = wallRefLineToCenterLine(refA, refB, w.params.thicknessMm, just, s);
+      consider({
+        wallId: w.id,
+        kind: "center",
+        a: c.a,
+        b: c.b,
+        p: c.a,
+        dir: new THREE.Vector3(1, 0, 0),
+        label: "Centerline"
+      });
+
+      // solved outline edges (faces + ends)
+      const poly = wallSolvedOutlines.get(w.id) ?? null;
+      if (!poly || poly.length < 4) continue;
+      const pts = poly.map((p) => new THREE.Vector3(p.x, 0, p.z));
+      const edges: Array<{ a: THREE.Vector3; b: THREE.Vector3; kind: "face" | "end"; label: string }> = [
+        { a: pts[0], b: pts[1], kind: "end", label: "End" },
+        { a: pts[1], b: pts[2], kind: "face", label: "Face" },
+        { a: pts[2], b: pts[3], kind: "end", label: "End" },
+        { a: pts[3], b: pts[0], kind: "face", label: "Face" }
+      ];
+      for (const e of edges) {
+        consider({
+          wallId: w.id,
+          kind: e.kind,
+          a: e.a,
+          b: e.b,
+          p: e.a,
+          dir: new THREE.Vector3(1, 0, 0),
+          label: e.label
+        });
+      }
+    }
+
+    return best?.pick ?? null;
   }
 
   function cross2XZ(a: THREE.Vector3, b: THREE.Vector3) {
@@ -1209,6 +1448,34 @@ export function startApp(args: AppArgs) {
     mountProps();
   };
 
+  const setToolAlign = () => {
+    ensureLayoutMode();
+    layoutTool = "align";
+    wallDraw.active = false;
+    wallDraw.a = null;
+    wallDraw.chainStart = null;
+    wallDraw.segments = 0;
+    wallDraw.hoverB = null;
+    wallDraw.typedMm = "";
+    wallTypedHud.style.display = "none";
+    wallSnapHud.style.display = "none";
+    if (wallDraw.preview) {
+      layoutRoot.remove(wallDraw.preview);
+      wallDraw.preview.geometry.dispose();
+      (wallDraw.preview.material as THREE.Material).dispose();
+      wallDraw.preview = null;
+    }
+    alignState.ref = null;
+    if (viewMode !== "2d") {
+      view2d.checked = true;
+      setView2d(true);
+    } else {
+      view2d.checked = true;
+    }
+    setUnderlayStatus("Align: click reference line...");
+    mountProps();
+  };
+
   window.addEventListener("keydown", (ev) => {
     if (isTypingTarget(ev.target)) return;
 
@@ -1341,6 +1608,11 @@ export function startApp(args: AppArgs) {
         ev.preventDefault();
         return;
       }
+      if ((ev.key === "a" || ev.key === "A") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        setToolAlign();
+        ev.preventDefault();
+        return;
+      }
       if (ev.key === " " || ev.code === "Space") {
         // Mirror wall side (Revit-like): works while drawing + when wall is selected.
         if (layoutTool === "wall") {
@@ -1374,6 +1646,17 @@ export function startApp(args: AppArgs) {
         }
 
         setToolSelect();
+        ev.preventDefault();
+        return;
+      }
+
+      if (ev.key === "Escape" && layoutTool === "align") {
+        if (alignState.ref) {
+          alignState.ref = null;
+          setUnderlayStatus("Align: canceled. Click reference line...");
+        } else {
+          setToolSelect();
+        }
         ev.preventDefault();
         return;
       }
@@ -2600,6 +2883,7 @@ export function startApp(args: AppArgs) {
   const I_RESET = icon("M12 6V3l-4 4 4 4V8c2.8 0 5 2.2 5 5a5 5 0 1 1-9.8-1H5.1A7 7 0 1 0 12 6z");
   const I_VIEW = icon("M12 5c5.5 0 9.5 5.5 9.5 7s-4 7-9.5 7S2.5 14.5 2.5 12 6.5 5 12 5zm0 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z");
   const I_DEBUG = icon("M4 12h16v2H4v-2zm7-8h2v16h-2V4z");
+  const I_ALIGN = icon("M4 7h12v2H4V7zm0 8h12v2H4v-2zM18 6l4 3-4 3V6zm0 6l4 3-4 3v-6z");
 
   const tb = createTopbar(args.ribbonEl);
 
@@ -2698,6 +2982,20 @@ export function startApp(args: AppArgs) {
     });
   };
 
+  const mountAlignToolProps = () => {
+    props.setTitle("Align");
+    const s = props.section();
+    const hint = document.createElement("div");
+    hint.className = "muted";
+    hint.textContent = "Klikni referenÄŤnĂş lĂ­niu, potom druhĂş rovnobeĹľnĂş lĂ­niu (stena sa posunie alebo sa upravĂ­ koniec). Esc = zruĹˇiĹĄ.";
+    s.appendChild(hint);
+    const cur = document.createElement("div");
+    cur.className = "muted";
+    cur.style.marginTop = "8px";
+    cur.textContent = alignState.ref ? `Reference: ${alignState.ref.label}` : "Reference: (none)";
+    s.appendChild(cur);
+  };
+
   const mountWallProps = (w: WallInstance) => {
     props.setTitle(`Wall (${w.id})`);
     const s = props.section();
@@ -2779,6 +3077,7 @@ export function startApp(args: AppArgs) {
   const mountProps = () => {
     if (mode !== "layout") return showNoProps();
     if (layoutTool === "wall") return mountWallToolProps();
+    if (layoutTool === "align") return mountAlignToolProps();
     if (selectedWallIds.size + selectedInstanceIds.size > 1) {
       args.propertiesEl.innerHTML = "";
       const t = document.createElement("div");
@@ -2828,6 +3127,15 @@ export function startApp(args: AppArgs) {
   });
   tb.toolButton(g1, { title: "Window", iconSvg: I_WINDOW, onClick: () => (ensureLayoutMode(), addOrSelectWindow()) });
   tb.toolButton(g1, { title: "Door (TODO)", iconSvg: I_DOOR, onClick: () => ensureLayoutMode() });
+
+  const gEdit = tb.addGroup("Edit");
+  tb.toolButton(gEdit, {
+    title: "Align (A)",
+    iconSvg: I_ALIGN,
+    onClick: () => {
+      setToolAlign();
+    }
+  });
 
   const g2 = tb.addGroup();
   tb.toolButton(g2, { title: "Add drawer", iconSvg: I_CABINET, onClick: () => (ensureLayoutMode(), addInstance("drawer_low")) });
@@ -4398,6 +4706,72 @@ export function startApp(args: AppArgs) {
 
         underlayCal.active = false;
         underlayCal.first = null;
+        return;
+      }
+
+      if (layoutTool === "align") {
+        if (viewMode !== "2d") return;
+        if (ev.button !== 0) return;
+
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+
+        const rect2 = renderer.domElement.getBoundingClientRect();
+        const mouse = { x: ev.clientX - rect2.left, y: ev.clientY - rect2.top };
+        const picked = pickAlignLineAt(hitPoint, mouse, rect2);
+
+        if (!picked) {
+          setUnderlayStatus("Align: click a wall line (center/face/end).");
+          return;
+        }
+
+        if (!alignState.ref) {
+          alignState.ref = picked;
+          setUnderlayStatus("Align: click second parallel line...");
+          mountProps();
+          return;
+        }
+
+        const ref = alignState.ref;
+        if (!alignParallel(ref, picked)) {
+          setUnderlayStatus("Align: lines must be parallel.");
+          return;
+        }
+
+        const shift = alignShiftVec(ref, picked);
+        const dxMm = Math.round(shift.x * 1000);
+        const dzMm = Math.round(shift.z * 1000);
+
+        const w = walls.find((x) => x.id === picked.wallId) ?? null;
+        if (!w) {
+          setUnderlayStatus("Align: wall not found.");
+          alignState.ref = null;
+          mountProps();
+          return;
+        }
+        if (pinnedWallIds.has(w.id)) {
+          setUnderlayStatus("Align: target wall is pinned.");
+          alignState.ref = null;
+          mountProps();
+          return;
+        }
+
+        if (dxMm === 0 && dzMm === 0) {
+          setUnderlayStatus("Align: already aligned.");
+          alignState.ref = null;
+          mountProps();
+          return;
+        }
+
+        if (picked.wallLine === "endA" || picked.wallLine === "endB") {
+          moveWallEndpointAndConnected(w, picked.wallLine === "endA" ? "a" : "b", dxMm, dzMm);
+        } else {
+          translateWallAndConnected(w, dxMm, dzMm);
+        }
+
+        alignState.ref = null;
+        setUnderlayStatus("Align: done. Click reference line...");
+        mountProps();
         return;
       }
 

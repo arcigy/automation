@@ -22,17 +22,210 @@ body {
     "Apple Color Emoji", "Segoe UI Emoji";
   color: var(--text);
   background: var(--bg);
+  overflow: hidden;
 }
 
 #app {
-  height: 100%;
+  height: 100vh;
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-rows: auto 1fr;
+}
+
+#main {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 320px 1fr 360px;
+  overflow: hidden;
+}
+
+#ribbon {
+  border-bottom: 1px solid var(--border);
+  background: rgba(18, 20, 26, 0.92);
+  backdrop-filter: blur(10px);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.topbar {
+  height: 44px;
+}
+
+#properties {
+  border-right: 1px solid var(--border);
+  background: rgba(18, 20, 26, 0.92);
+  backdrop-filter: blur(10px);
+  padding: 10px;
+  overflow: auto;
+}
+
+.props-title {
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.props-section {
+  border: 1px solid rgba(36, 40, 54, 0.9);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(10, 12, 16, 0.35);
+}
+
+.props-row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.props-row:last-child {
+  margin-bottom: 0;
+}
+
+#properties[hidden] {
+  display: none;
+}
+
+.topbar {
+  height: 44px;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  padding: 6px 10px;
+  overflow: auto hidden;
+}
+
+.topbar-group {
+  display: grid;
+  grid-auto-flow: row;
+  gap: 4px;
+  padding-right: 10px;
+  border-right: 1px solid rgba(36, 40, 54, 0.7);
+}
+
+.topbar-group:last-child {
+  border-right: none;
+  padding-right: 0;
+}
+
+.topbar-group-title {
+  font-size: 10px;
+  line-height: 1;
+  color: rgba(154, 163, 178, 0.85);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.topbar-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tool-btn {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid rgba(36, 40, 54, 0.95);
+  background: rgba(27, 32, 48, 0.9);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.tool-btn:hover {
+  background: rgba(35, 42, 62, 0.95);
+}
+
+.tool-btn.active {
+  outline: 2px solid rgba(61, 220, 151, 0.9);
+  outline-offset: 1px;
+}
+
+.tool-icon {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+}
+
+.tool-icon svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.topbar-panels-host {
+  position: absolute;
+  top: 44px;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.topbar-panel {
+  pointer-events: auto;
+  position: absolute;
+  top: 6px;
+  width: 320px;
+  border: 1px solid rgba(36, 40, 54, 0.95);
+  background: rgba(18, 20, 26, 0.98);
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.35);
+}
+
+.topbar-panel .row {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.topbar-panel .row:last-child {
+  margin-bottom: 0;
+}
+
+.topbar-panel .row label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.topbar-panel .actions {
+  margin: 10px 0 0;
+  grid-template-columns: 1fr 1fr;
 }
 
 #viewer {
   position: relative;
   min-width: 0;
+  min-height: 0;
+}
+
+#viewer > canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#resetViewBtn {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 10;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(36, 40, 54, 0.95);
+  background: rgba(18, 20, 26, 0.92);
+  color: var(--text);
+  cursor: pointer;
 }
 
 #sidebar {

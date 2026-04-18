@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1 --port 5180",
     "build": "vite build",
+    "test": "vitest run",
     "preview": "vite preview",
     "blender:from-json": "tsx scripts/blender/fromJson.ts",
     "worker:dev": "tsx scripts/worker.ts",
     "dev:local": "tsx scripts/devLocal.ts"
   },
   "dependencies": {
+    "pdfjs-dist": "^4.10.38",
+    "polygon-clipping": "^0.15.7",
     "postprocessing": "^6.39.0",
     "realism-effects": "^1.1.2",
     "three": "^0.168.0",
@@ -20,8 +23,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "typescript": "^5.5.4",
     "tsx": "^4.19.2",
-    "vite": "^5.4.0"
+    "typescript": "^5.5.4",
+    "vite": "^5.4.0",
+    "vitest": "^4.1.4"
   }
 }

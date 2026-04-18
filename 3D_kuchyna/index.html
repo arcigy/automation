@@ -7,7 +7,13 @@
   </head>
   <body>
     <div id="app">
-      <div id="viewer" aria-label="3D viewer"></div>
+      <header id="ribbon" aria-label="Ribbon toolbar"></header>
+
+      <div id="main">
+      <aside id="properties" aria-label="Properties"></aside>
+      <div id="viewer" aria-label="3D viewer">
+        <button id="resetViewBtn" type="button" title="Reset view">Reset view</button>
+      </div>
       <aside id="sidebar">
         <header class="sidebar-header">
           <h1>Drawer cabinet</h1>
@@ -67,6 +73,7 @@
           </div>
         </div>
       </aside>
+      </div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>
