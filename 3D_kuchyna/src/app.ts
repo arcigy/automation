@@ -4179,8 +4179,19 @@ export function startApp(args: AppArgs) {
 
     if (mode === "layout") {
       if (underlayCal.active) {
-        const hitPoint = new THREE.Vector3();
-        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+        if (!underlayMesh.visible || underlayState.pinned) {
+          underlayCal.active = false;
+          underlayCal.first = null;
+          setUnderlayStatus("Underlay not available.");
+          return;
+        }
+
+        const hit = raycaster.intersectObject(underlayMesh, false)[0];
+        if (!hit) {
+          setUnderlayStatus("Click on underlay.");
+          return;
+        }
+        const hitPoint = hit.point.clone();
         if (!underlayCal.first) {
           underlayCal.first = hitPoint.clone();
           setUnderlayStatus(underlayCal.mode === "reference" ? "Reference scale: click second point..." : "Kalibrácia: klikni druhý bod...");
@@ -4190,13 +4201,34 @@ export function startApp(args: AppArgs) {
         const a = underlayCal.first;
         const b = hitPoint;
         const distM = Math.hypot(b.x - a.x, b.z - a.z);
-        const desiredM = Math.max(1, underlayCal.knownMm) / 1000;
+        if (distM <= 1e-6) {
+          setUnderlayStatus("Reference scale failed (zero distance).");
+          underlayCal.active = false;
+          underlayCal.first = null;
+          return;
+        }
+
+        let desiredMm = Math.max(1, underlayCal.knownMm);
+        if (underlayCal.mode === "reference") {
+          const measuredMm = Math.round(distM * 1000);
+          const s = window.prompt("Reálna vzdialenosť (mm)", String(measuredMm));
+          const n = s === null ? null : Number(s.trim().replace(",", "."));
+          if (!n || !Number.isFinite(n) || n <= 0) {
+            setUnderlayStatus("Reference scale canceled.");
+            underlayCal.active = false;
+            underlayCal.first = null;
+            return;
+          }
+          desiredMm = n;
+        }
+
+        const desiredM = desiredMm / 1000;
         if (distM > 1e-6 && underlayMesh.visible) {
           const factor = desiredM / distM;
           underlayState.scale *= factor;
           updateUnderlayTransform();
           if (underlayScaleEl) underlayScaleEl.value = String(underlayState.scale);
-          setUnderlayStatus(`Kalibrácia OK: ${underlayCal.knownMm} mm`);
+          setUnderlayStatus(underlayCal.mode === "reference" ? `Reference scale OK: ${Math.round(desiredMm)} mm` : `Kalibrácia OK: ${Math.round(desiredMm)} mm`);
         } else {
           setUnderlayStatus("Kalibrácia zlyhala (nulová vzdialenosť).");
         }
