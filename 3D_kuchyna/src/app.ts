@@ -534,6 +534,7 @@ export function startApp(args: AppArgs) {
     step: "pickTarget" as "pickTarget" | "pickCutter",
     targetWallId: null as string | null,
     targetPick: null as AlignPickedLine | null,
+    targetClick: null as THREE.Vector3 | null,
     hover: null as AlignPickedLine | null,
     lastTarget: null as AlignPickedLine | null,
     lastCutter: null as AlignPickedLine | null,
@@ -1595,6 +1596,7 @@ export function startApp(args: AppArgs) {
     trimState.step = "pickTarget";
     trimState.targetWallId = null;
     trimState.targetPick = null;
+    trimState.targetClick = null;
     trimState.hover = null;
     trimState.lastTarget = null;
     trimState.lastCutter = null;
@@ -1804,6 +1806,7 @@ export function startApp(args: AppArgs) {
           trimState.step = "pickTarget";
           trimState.targetWallId = null;
           trimState.targetPick = null;
+          trimState.targetClick = null;
           trimState.hover = null;
           trimState.lastTarget = null;
           trimState.lastCutter = null;
@@ -4986,6 +4989,7 @@ export function startApp(args: AppArgs) {
         if (trimState.step === "pickTarget") {
           trimState.targetWallId = picked.wallId;
           trimState.targetPick = picked;
+          trimState.targetClick = hitPoint.clone();
           trimState.step = "pickCutter";
           trimState.lastTarget = null;
           trimState.lastCutter = null;
@@ -5011,9 +5015,54 @@ export function startApp(args: AppArgs) {
           trimState.step = "pickTarget";
           trimState.targetWallId = null;
           trimState.targetPick = null;
+          trimState.targetClick = null;
           setUnderlayStatus("Trim: target is pinned.");
           mountProps();
           return;
+        }
+
+        // Wall-to-wall Trim/Extend to Corner: if second click hits another wall line, extend/trim both walls to their intersection.
+        if (picked.wallId !== w.id && trimState.targetPick && trimState.targetClick) {
+          const w2 = walls.find((x) => x.id === picked.wallId) ?? null;
+          if (w2 && !pinnedWallIds.has(w2.id)) {
+            const I = lineLineIntersectionXZ(trimState.targetPick.p, trimState.targetPick.dir, picked.p, picked.dir);
+            if (!I) {
+              setUnderlayStatus("Trim: walls must not be parallel.");
+              return;
+            }
+
+            const chooseEnd = (wall: WallInstance, click: THREE.Vector3) => {
+              const a = new THREE.Vector3(wall.params.aMm.x / 1000, 0, wall.params.aMm.z / 1000);
+              const b = new THREE.Vector3(wall.params.bMm.x / 1000, 0, wall.params.bMm.z / 1000);
+              return click.distanceTo(a) <= click.distanceTo(b) ? ("a" as const) : ("b" as const);
+            };
+
+            const iMm = toMmPoint(I);
+            const end1 = chooseEnd(w, trimState.targetClick);
+            const end2 = chooseEnd(w2, cutterClick);
+
+            const old1 = end1 === "a" ? w.params.aMm : w.params.bMm;
+            const old2 = end2 === "a" ? w2.params.aMm : w2.params.bMm;
+
+            const dx1 = iMm.x - old1.x;
+            const dz1 = iMm.z - old1.z;
+            const dx2 = iMm.x - old2.x;
+            const dz2 = iMm.z - old2.z;
+
+            if (dx1 !== 0 || dz1 !== 0) moveWallEndpointAndConnected(w, end1, dx1, dz1);
+            if (dx2 !== 0 || dz2 !== 0) moveWallEndpointAndConnected(w2, end2, dx2, dz2);
+
+            trimState.lastTarget = trimState.targetPick;
+            trimState.lastCutter = picked;
+            trimState.lastUntilMs = performance.now() + 2500;
+            trimState.step = "pickTarget";
+            trimState.targetWallId = null;
+            trimState.targetPick = null;
+            trimState.targetClick = null;
+            setUnderlayStatus("Trim: corner done. Click target wall...");
+            mountProps();
+            return;
+          }
         }
 
         const aW = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
@@ -5067,6 +5116,7 @@ export function startApp(args: AppArgs) {
           trimState.step = "pickTarget";
           trimState.targetWallId = null;
           trimState.targetPick = null;
+          trimState.targetClick = null;
           mountProps();
           return;
         }
@@ -5079,6 +5129,7 @@ export function startApp(args: AppArgs) {
         trimState.step = "pickTarget";
         trimState.targetWallId = null;
         trimState.targetPick = null;
+        trimState.targetClick = null;
         setUnderlayStatus("Trim: done. Click target wall...");
         mountProps();
         return;
