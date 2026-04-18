@@ -1,9 +1,10 @@
-﻿import type { DrawerLowParams } from "../model/cabinetTypes";
-import { computeEqualDrawerFrontHeights } from "../model/cabinetTypes";
+﻿import type { NestedDrawerLowParams } from "../model/cabinetTypes";
+import { computeEqualNestedDrawerFrontHeights } from "../model/cabinetTypes";
 
 type ControlApi = {
   syncFromParams: () => void;
-  isAutoFitEnabled: () => boolean;
+  highlightParamKeys: (keys: string[]) => void;
+  clearHighlights: () => void;
 };
 
 type CreateControlsArgs = {
@@ -11,9 +12,9 @@ type CreateControlsArgs = {
   getWorktopThicknessMm: () => number;
 };
 
-export function createDrawerLowControls(
+export function createNestedDrawerLowControls(
   container: HTMLElement,
-  params: DrawerLowParams,
+  params: NestedDrawerLowParams,
   args: CreateControlsArgs
 ): ControlApi {
   container.innerHTML = "";
@@ -22,7 +23,7 @@ export function createDrawerLowControls(
   grid.className = "grid";
   container.appendChild(grid);
 
-  const numberFields: Array<{ key: keyof DrawerLowParams; input: HTMLInputElement }> = [];
+  const numberFields: Array<{ key: keyof NestedDrawerLowParams; input: HTMLInputElement }> = [];
   const keyFields: Array<{
     key: "materials.bodyKey" | "materials.frontKey" | "materials.drawerKey";
     input: HTMLInputElement;
@@ -31,11 +32,9 @@ export function createDrawerLowControls(
     key: "materials.bodyColor" | "materials.frontColor" | "materials.drawerColor";
     input: HTMLInputElement;
   }> = [];
-  let bodyTextureRotation: HTMLSelectElement | null = null;
-  let bodyTintColor: HTMLInputElement | null = null;
-  let bodyTintStrength: HTMLInputElement | null = null;
+  const fieldByKey = new Map<string, HTMLElement>();
 
-  const addNumber = (key: keyof DrawerLowParams, label: string, opts: { min?: number; step?: number } = {}) => {
+  const addNumber = (key: keyof NestedDrawerLowParams, label: string, opts: { min?: number; step?: number } = {}) => {
     const wrap = document.createElement("div");
     wrap.className = "field";
 
@@ -55,12 +54,10 @@ export function createDrawerLowControls(
     grid.appendChild(wrap);
 
     numberFields.push({ key, input });
+    fieldByKey.set(String(key), wrap);
   };
 
-  const addKey = (
-    key: "materials.bodyKey" | "materials.frontKey" | "materials.drawerKey",
-    label: string
-  ) => {
+  const addKey = (key: "materials.bodyKey" | "materials.frontKey" | "materials.drawerKey", label: string) => {
     const wrap = document.createElement("div");
     wrap.className = "field";
 
@@ -78,12 +75,10 @@ export function createDrawerLowControls(
     grid.appendChild(wrap);
 
     keyFields.push({ key, input });
+    fieldByKey.set(String(key), wrap);
   };
 
-  const addColor = (
-    key: "materials.bodyColor" | "materials.frontColor" | "materials.drawerColor",
-    label: string
-  ) => {
+  const addColor = (key: "materials.bodyColor" | "materials.frontColor" | "materials.drawerColor", label: string) => {
     const wrap = document.createElement("div");
     wrap.className = "field";
 
@@ -104,21 +99,20 @@ export function createDrawerLowControls(
     grid.appendChild(wrap);
 
     colorFields.push({ key, input });
+    fieldByKey.set(String(key), wrap);
   };
 
   // Base
   addNumber("width", "Width (mm)", { min: 200, step: 1 });
 
-  // Height:
-  // Users enter FINAL height incl. worktop thickness. We also expose carcass height (excl. worktop)
-  // for convenience; editing either updates the other.
+  // Height (final incl. worktop + carcass excl. worktop)
   const heightFinalWrap = document.createElement("div");
   heightFinalWrap.className = "field";
   const heightFinalLabel = document.createElement("label");
   heightFinalLabel.textContent = "Final height (incl. worktop) (mm)";
   heightFinalLabel.htmlFor = "f_height";
   const heightFinal = document.createElement("input");
-  heightFinal.id = "f_height"; // keep id stable so part->param highlighting still works
+  heightFinal.id = "f_height";
   heightFinal.type = "number";
   heightFinal.inputMode = "decimal";
   heightFinal.min = "50";
@@ -126,6 +120,7 @@ export function createDrawerLowControls(
   heightFinalWrap.appendChild(heightFinalLabel);
   heightFinalWrap.appendChild(heightFinal);
   grid.appendChild(heightFinalWrap);
+  fieldByKey.set("height", heightFinalWrap);
 
   const heightCarcassWrap = document.createElement("div");
   heightCarcassWrap.className = "field";
@@ -148,18 +143,41 @@ export function createDrawerLowControls(
   addNumber("plinthHeight", "Plinth height (mm)", { min: 0, step: 1 });
   addNumber("plinthSetbackMm", "Plinth setback (mm)", { min: 0, step: 1 });
 
-  // Front/drawers
+  // Front / reveals
+  addNumber("drawerCount", "Drawer count", { min: 2, step: 1 });
   addNumber("frontThicknessMm", "Front thickness (mm)", { min: 5, step: 1 });
   addNumber("frontGap", "Front gap (mm)", { min: 0, step: 0.5 });
   addNumber("sideGap", "Side reveal (mm)", { min: 0, step: 0.5 });
   addNumber("topGap", "Top reveal (mm)", { min: 0, step: 0.5 });
   addNumber("bottomGap", "Bottom reveal (mm)", { min: 0, step: 0.5 });
   addNumber("sideClearanceMm", "Side clearance (mm)", { min: 0, step: 0.5 });
-  addNumber("drawerCount", "Drawer count", { min: 1, step: 1 });
-  addNumber("drawerBoxThickness", "Drawer box thickness (mm)", { min: 5, step: 1 });
-  addNumber("drawerBoxSideHeight", "Drawer box side/back height (mm)", { min: 30, step: 1 });
+  addNumber("topFrontHeightMm", "Top front height (mm)", { min: 20, step: 1 });
+  addNumber("handlePositionMm", "Handle pos from top (mm)", { min: 0, step: 1 });
+  addNumber("handleLengthMm", "Handle length (mm)", { min: 0, step: 1 });
+  addNumber("handleSizeMm", "Handle size (mm)", { min: 0, step: 1 });
+  addNumber("handleProjectionMm", "Handle projection (mm)", { min: 0, step: 1 });
 
-  // Handles
+  const stackWrap = document.createElement("div");
+  stackWrap.className = "field";
+  stackWrap.style.gridTemplateColumns = "1fr 120px";
+
+  const stackLabel = document.createElement("label");
+  stackLabel.textContent = "Front stack preset";
+  stackLabel.htmlFor = "f_frontStackPreset";
+
+  const stackPreset = document.createElement("select");
+  stackPreset.id = "f_frontStackPreset";
+  stackPreset.innerHTML = `
+    <option value="equal">equal</option>
+    <option value="top_small">top_small</option>
+    <option value="manual">manual</option>
+  `;
+
+  stackWrap.appendChild(stackLabel);
+  stackWrap.appendChild(stackPreset);
+  grid.appendChild(stackWrap);
+  fieldByKey.set("frontStackPreset", stackWrap);
+
   const handleWrap = document.createElement("div");
   handleWrap.className = "field";
   handleWrap.style.gridTemplateColumns = "1fr 120px";
@@ -181,90 +199,7 @@ export function createDrawerLowControls(
   handleWrap.appendChild(handleLabel);
   handleWrap.appendChild(handleType);
   grid.appendChild(handleWrap);
-
-  addNumber("handlePositionMm", "Handle pos from top (mm)", { min: 0, step: 1 });
-  addNumber("handleLengthMm", "Handle length (mm)", { min: 0, step: 1 });
-  addNumber("handleSizeMm", "Handle size (mm)", { min: 0, step: 1 });
-  addNumber("handleProjectionMm", "Handle projection (mm)", { min: 0, step: 1 });
-
-  addKey("materials.bodyKey", "Body material key");
-  addKey("materials.frontKey", "Fronts material key");
-  addKey("materials.drawerKey", "Drawer material key");
-
-  addColor("materials.bodyColor", "Body color");
-  addColor("materials.frontColor", "Fronts color");
-  addColor("materials.drawerColor", "Drawer color");
-
-  // Body texture rotation
-  {
-    const wrap = document.createElement("div");
-    wrap.className = "field";
-
-    const lab = document.createElement("label");
-    lab.textContent = "Body texture rotation";
-    lab.htmlFor = "f_bodyTextureRotation";
-
-    const sel = document.createElement("select");
-    sel.id = "f_bodyTextureRotation";
-    sel.innerHTML = `
-      <option value="0">0°</option>
-      <option value="90">90°</option>
-      <option value="180">180°</option>
-      <option value="270">270°</option>
-    `;
-
-    wrap.appendChild(lab);
-    wrap.appendChild(sel);
-    grid.appendChild(wrap);
-
-    bodyTextureRotation = sel;
-  }
-
-  // Body tint
-  {
-    const wrap = document.createElement("div");
-    wrap.className = "field";
-
-    const lab = document.createElement("label");
-    lab.textContent = "Body wood tint";
-    lab.htmlFor = "f_bodyTintColor";
-
-    const input = document.createElement("input");
-    input.id = "f_bodyTintColor";
-    input.type = "color";
-    input.style.width = "120px";
-    input.style.height = "36px";
-    input.style.padding = "0";
-    input.style.borderRadius = "10px";
-
-    wrap.appendChild(lab);
-    wrap.appendChild(input);
-    grid.appendChild(wrap);
-
-    bodyTintColor = input;
-  }
-
-  {
-    const wrap = document.createElement("div");
-    wrap.className = "field";
-
-    const lab = document.createElement("label");
-    lab.textContent = "Body tint strength";
-    lab.htmlFor = "f_bodyTintStrength";
-
-    const input = document.createElement("input");
-    input.id = "f_bodyTintStrength";
-    input.type = "range";
-    input.min = "0";
-    input.max = "100";
-    input.step = "1";
-
-    wrap.appendChild(lab);
-    wrap.appendChild(input);
-    grid.appendChild(wrap);
-
-    bodyTintStrength = input;
-  }
+  fieldByKey.set("handleType", handleWrap);
 
   // Auto-fit checkbox
   const autoWrap = document.createElement("div");
@@ -298,9 +233,26 @@ export function createDrawerLowControls(
   const heights = document.createElement("textarea");
   heights.id = "f_drawerFrontHeights";
   heights.rows = 3;
-  heights.placeholder = "e.g. 200, 200, 200";
+  heights.placeholder = "e.g. 240, 240, 240";
   heightsWrap.appendChild(heights);
   grid.appendChild(heightsWrap);
+  fieldByKey.set("drawerFrontHeights", heightsWrap);
+
+  // Drawer box
+  addNumber("drawerBoxThickness", "Drawer box thickness (mm)", { min: 5, step: 1 });
+  addNumber("drawerBoxSideHeight", "Outer drawer side/back height (mm)", { min: 30, step: 1 });
+
+  // Inner drawer
+  addNumber("innerDrawerDepth", "Inner tray depth (mm)", { min: 80, step: 1 });
+  addNumber("innerDrawerSideHeight", "Inner tray side height (mm)", { min: 20, step: 1 });
+
+  addKey("materials.bodyKey", "Body material key");
+  addKey("materials.frontKey", "Fronts material key");
+  addKey("materials.drawerKey", "Drawer material key");
+
+  addColor("materials.bodyColor", "Body color");
+  addColor("materials.frontColor", "Fronts color");
+  addColor("materials.drawerColor", "Drawer color");
 
   const syncFromParams = () => {
     for (const f of numberFields) {
@@ -311,33 +263,35 @@ export function createDrawerLowControls(
     heightCarcass.value = String(computeCarcassHeight());
     for (const f of keyFields) f.input.value = getMaterialKey(params, f.key);
     for (const f of colorFields) f.input.value = getMaterialColor(params, f.key);
-    if (bodyTextureRotation) bodyTextureRotation.value = String(params.materials.bodyPbr?.rotationDeg ?? 0);
-    if (bodyTintColor) bodyTintColor.value = params.materials.bodyPbr?.tintColor ?? "#ffffff";
-    if (bodyTintStrength) bodyTintStrength.value = String(Math.round((params.materials.bodyPbr?.tintStrength ?? 0) * 100));
 
     heights.value = params.drawerFrontHeights.join(", ");
-    heights.readOnly = autoFit.checked;
+    stackPreset.value = params.frontStackPreset ?? "equal";
     handleType.value = params.handleType ?? "none";
     updateUiState();
   };
 
   const updateUiState = () => {
-    const type = (handleType.value as DrawerLowParams["handleType"]) ?? "none";
+    heights.readOnly = autoFit.checked;
 
-    const pos = numberFields.find((f) => f.key === "handlePositionMm")?.input ?? null;
-    if (pos) pos.disabled = type === "none" || type === "gola";
+    stackPreset.disabled = !autoFit.checked;
 
-    const len = numberFields.find((f) => f.key === "handleLengthMm")?.input ?? null;
-    if (len) len.disabled = type === "none" || type === "knob";
+    const topFrontEl = numberFields.find((f) => f.key === "topFrontHeightMm")?.input ?? null;
+    if (topFrontEl) topFrontEl.disabled = !autoFit.checked || stackPreset.value !== "top_small";
 
-    const size = numberFields.find((f) => f.key === "handleSizeMm")?.input ?? null;
-    if (size) size.disabled = type === "none";
+    const handlePosEl = numberFields.find((f) => f.key === "handlePositionMm")?.input ?? null;
+    if (handlePosEl) handlePosEl.disabled = handleType.value === "none" || handleType.value === "gola";
 
-    const proj = numberFields.find((f) => f.key === "handleProjectionMm")?.input ?? null;
-    if (proj) proj.disabled = type === "none";
+    const handleLenEl = numberFields.find((f) => f.key === "handleLengthMm")?.input ?? null;
+    if (handleLenEl)
+      handleLenEl.disabled =
+        handleType.value === "none" || handleType.value === "knob" ? true : false; // bar/cup/gola use length
+
+    const handleSizeEl = numberFields.find((f) => f.key === "handleSizeMm")?.input ?? null;
+    if (handleSizeEl) handleSizeEl.disabled = handleType.value === "none";
+
+    const handleProjEl = numberFields.find((f) => f.key === "handleProjectionMm")?.input ?? null;
+    if (handleProjEl) handleProjEl.disabled = handleType.value === "none";
   };
-
-  let lastDrawerCount = params.drawerCount;
 
   const readNumber = (input: HTMLInputElement, fallback: number) => {
     const n = Number(input.value);
@@ -345,17 +299,15 @@ export function createDrawerLowControls(
   };
 
   const getWorktopT = () => Math.max(0, Math.round(args.getWorktopThicknessMm()));
-  const isUnderWorktop = () => {
-    if ((params as any).wallMounted === true) return false;
-    return getWorktopT() > 0;
-  };
   const computeCarcassHeight = () => {
-    if (!isUnderWorktop()) return params.height;
-    return Math.max(50, Math.round(params.height - getWorktopT()));
+    const t = getWorktopT();
+    if (t <= 0) return params.height;
+    return Math.max(50, Math.round(params.height - t));
   };
   const setFinalHeightFromCarcass = (carcassMm: number) => {
     const c = Math.max(50, Math.round(carcassMm));
-    params.height = isUnderWorktop() ? c + getWorktopT() : c;
+    const t = getWorktopT();
+    params.height = t > 0 ? c + t : c;
   };
 
   const onInputsChanged = () => {
@@ -365,33 +317,22 @@ export function createDrawerLowControls(
       (params[f.key] as number) = readNumber(f.input, current);
     }
 
-    params.drawerCount = Math.max(1, Math.round(params.drawerCount));
-
     for (const f of keyFields) setMaterialKey(params, f.key, f.input.value);
     for (const f of colorFields) setMaterialColor(params, f.key, f.input.value);
-    if (bodyTextureRotation) {
-      if (!params.materials.bodyPbr) params.materials.bodyPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
-      params.materials.bodyPbr.rotationDeg = (Number(bodyTextureRotation.value) as 0 | 90 | 180 | 270) ?? 0;
-    }
-    if (bodyTintColor || bodyTintStrength) {
-      if (!params.materials.bodyPbr) params.materials.bodyPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
-      if (bodyTintColor) params.materials.bodyPbr.tintColor = bodyTintColor.value;
-      if (bodyTintStrength) params.materials.bodyPbr.tintStrength = Number(bodyTintStrength.value) / 100;
-    }
 
-    params.handleType = (handleType.value as DrawerLowParams["handleType"]) ?? "none";
+    params.handleType = (handleType.value as NestedDrawerLowParams["handleType"]) ?? "none";
+
+    params.drawerCount = Math.max(2, Math.round(params.drawerCount));
 
     if (autoFit.checked) {
-      params.drawerFrontHeights = computeEqualDrawerFrontHeights(params);
+      params.frontStackPreset = (stackPreset.value as NestedDrawerLowParams["frontStackPreset"]) ?? "equal";
+      params.drawerFrontHeights = computeEqualNestedDrawerFrontHeights(params);
       heights.value = params.drawerFrontHeights.join(", ");
     } else {
-      const typed = parseHeights(heights.value);
-      params.drawerFrontHeights = typed;
-      if (params.drawerCount !== lastDrawerCount) {
-        params.drawerFrontHeights = normalizeHeights(typed, params.drawerCount);
-        heights.value = params.drawerFrontHeights.join(", ");
-        lastDrawerCount = params.drawerCount;
-      }
+      params.frontStackPreset = "manual";
+      const typed = parseNumbers(heights.value);
+      params.drawerFrontHeights = normalizeHeights(typed, params.drawerCount);
+      heights.value = params.drawerFrontHeights.join(", ");
     }
 
     updateUiState();
@@ -401,11 +342,6 @@ export function createDrawerLowControls(
   for (const f of numberFields) f.input.addEventListener("input", onInputsChanged);
   for (const f of keyFields) f.input.addEventListener("input", onInputsChanged);
   for (const f of colorFields) f.input.addEventListener("input", onInputsChanged);
-  bodyTextureRotation?.addEventListener("change", onInputsChanged);
-  bodyTintColor?.addEventListener("input", onInputsChanged);
-  bodyTintStrength?.addEventListener("input", onInputsChanged);
-  handleType.addEventListener("change", onInputsChanged);
-  heights.addEventListener("input", onInputsChanged);
 
   heightFinal.addEventListener("input", () => {
     params.height = Math.max(50, Math.round(readNumber(heightFinal, params.height)));
@@ -417,17 +353,41 @@ export function createDrawerLowControls(
     heightFinal.value = String(params.height);
     onInputsChanged();
   });
-
+  heights.addEventListener("input", () => {
+    if (autoFit.checked) {
+      autoFit.checked = false;
+      heights.readOnly = false;
+    }
+    onInputsChanged();
+  });
+  stackPreset.addEventListener("change", onInputsChanged);
+  handleType.addEventListener("change", onInputsChanged);
   autoFit.addEventListener("change", () => {
-    heights.readOnly = autoFit.checked;
     onInputsChanged();
   });
 
   syncFromParams();
-  return { syncFromParams, isAutoFitEnabled: () => autoFit.checked };
+
+  const clearHighlights = () => {
+    for (const el of fieldByKey.values()) el.classList.remove("is-related");
+  };
+
+  const highlightParamKeys = (keys: string[]) => {
+    clearHighlights();
+    let first: HTMLElement | null = null;
+    for (const k of keys) {
+      const el = fieldByKey.get(k);
+      if (!el) continue;
+      el.classList.add("is-related");
+      if (!first) first = el;
+    }
+    first?.scrollIntoView({ block: "nearest" });
+  };
+
+  return { syncFromParams, highlightParamKeys, clearHighlights };
 }
 
-function parseHeights(raw: string): number[] {
+function parseNumbers(raw: string): number[] {
   const parts = raw
     .split(/[,\n]/g)
     .map((s) => s.trim())
@@ -443,7 +403,7 @@ function normalizeHeights(existing: number[], count: number): number[] {
 }
 
 function getMaterialColor(
-  params: DrawerLowParams,
+  params: NestedDrawerLowParams,
   key: "materials.bodyColor" | "materials.frontColor" | "materials.drawerColor"
 ) {
   if (key === "materials.bodyColor") return params.materials.bodyColor;
@@ -452,7 +412,7 @@ function getMaterialColor(
 }
 
 function setMaterialColor(
-  params: DrawerLowParams,
+  params: NestedDrawerLowParams,
   key: "materials.bodyColor" | "materials.frontColor" | "materials.drawerColor",
   value: string
 ) {
@@ -461,14 +421,17 @@ function setMaterialColor(
   else params.materials.drawerColor = value;
 }
 
-function getMaterialKey(params: DrawerLowParams, key: "materials.bodyKey" | "materials.frontKey" | "materials.drawerKey") {
+function getMaterialKey(
+  params: NestedDrawerLowParams,
+  key: "materials.bodyKey" | "materials.frontKey" | "materials.drawerKey"
+) {
   if (key === "materials.bodyKey") return params.materials.bodyKey;
   if (key === "materials.frontKey") return params.materials.frontKey;
   return params.materials.drawerKey;
 }
 
 function setMaterialKey(
-  params: DrawerLowParams,
+  params: NestedDrawerLowParams,
   key: "materials.bodyKey" | "materials.frontKey" | "materials.drawerKey",
   value: string
 ) {
@@ -476,4 +439,3 @@ function setMaterialKey(
   else if (key === "materials.frontKey") params.materials.frontKey = value;
   else params.materials.drawerKey = value;
 }
-

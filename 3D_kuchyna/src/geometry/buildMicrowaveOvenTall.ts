@@ -1,14 +1,14 @@
-import * as THREE from "three";
-import type { FridgeTallParams } from "../model/cabinetTypes";
-import { getPbrMaterialWorldSizeM, getPbrWoodMaterial, type PbrMaterialRef } from "../materials/pbrMaterials";
+﻿import * as THREE from "three";
+import type { MicrowaveOvenTallParams } from "../model/cabinetTypes";
+import { getPbrMaterialWorldSizeM, getPbrWoodMaterial } from "../materials/pbrMaterials";
 import { applyBoxGrainUv } from "../materials/uvGrain";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 
 const MM_TO_M = 0.001;
 
-export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
+export function buildMicrowaveOvenTall(p: MicrowaveOvenTallParams): THREE.Group {
   const g = new THREE.Group();
-  g.name = "fridgeTallModule";
+  g.name = "microwaveOvenTallModule";
 
   const width = Math.max(200, p.width) * MM_TO_M;
   const height = Math.max(400, p.height) * MM_TO_M;
@@ -24,26 +24,25 @@ export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
   const bottomGap = Math.max(0, p.bottomGap) * MM_TO_M;
   const frontT = Math.max(0.005, (p.frontThicknessMm > 0 ? p.frontThicknessMm : p.boardThickness) * MM_TO_M);
 
-  const makeMat = (fallbackColor: string, ref: PbrMaterialRef | undefined, roughness: number) =>
-    ref
-      ? getPbrWoodMaterial({ fallbackColor, ref })
-      : new THREE.MeshStandardMaterial({
-          color: parseHexColor(fallbackColor),
-          roughness,
-          metalness: 0.0
-        });
-
-  const bodyMat = makeMat(p.materials.bodyColor, p.materials.bodyPbr, 0.85);
-  const frontMat = makeMat(p.materials.frontColor, p.materials.frontPbr, 0.65);
-  const drawerMat = makeMat(p.materials.drawerColor, p.materials.drawerPbr, 0.65);
+  const bodyMat = p.materials.bodyPbr
+    ? getPbrWoodMaterial({ fallbackColor: p.materials.bodyColor, ref: p.materials.bodyPbr })
+    : new THREE.MeshStandardMaterial({
+        color: parseHexColor(p.materials.bodyColor),
+        roughness: 0.85,
+        metalness: 0.0
+      });
+  const frontMat = new THREE.MeshStandardMaterial({
+    color: parseHexColor(p.materials.frontColor),
+    roughness: 0.65,
+    metalness: 0.0
+  });
   const railMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4b, roughness: 0.55, metalness: 0.1 });
-  // (no hinges in this module; fridge_tall ends at the fridge top)
+  const hingeMat = new THREE.MeshStandardMaterial({ color: 0x4a4f5a, roughness: 0.5, metalness: 0.15 });
 
   const setPartMeta = (
     mesh: THREE.Mesh,
     dimsM: { width: number; height: number; depth: number },
-    grainAlong: "width" | "height" | "depth" | "none" = "none",
-    pbrRef: PbrMaterialRef | undefined = p.materials.bodyPbr
+    grainAlong: "width" | "height" | "depth" | "none" = "none"
   ) => {
     mesh.userData.selectable = true;
     mesh.userData.dimensionsMm = {
@@ -52,12 +51,12 @@ export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
       depth: dimsM.depth / MM_TO_M
     };
     mesh.userData.grainAlong = grainAlong;
-    if (pbrRef) {
+    if (p.materials.bodyPbr) {
       applyBoxGrainUv(
         mesh.geometry as THREE.BufferGeometry,
         { x: dimsM.width, y: dimsM.height, z: dimsM.depth },
         grainAlong,
-        { texScaleM: getPbrMaterialWorldSizeM(pbrRef.id) }
+        { texScaleM: getPbrMaterialWorldSizeM(p.materials.bodyPbr.id) }
       );
     }
   };
@@ -72,7 +71,7 @@ export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
     mesh.userData.grainAlong = grainAlong;
   };
 
-  const setParamKeys = (obj: THREE.Object3D, keys: Array<keyof FridgeTallParams | string>) => {
+  const setParamKeys = (obj: THREE.Object3D, keys: Array<keyof MicrowaveOvenTallParams | string>) => {
     (obj as any).userData ??= {};
     (obj as any).userData.paramKeys = [...keys];
   };
@@ -107,7 +106,7 @@ export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
   setParamKeys(bottom, ["width", "depth", "boardThickness", "plinthHeight"]);
   g.add(bottom);
 
-  // Full top panel
+  // Full top panel (requested): cover the whole top instead of only rails.
   const topGeo = new THREE.BoxGeometry(internalW, boardT, internalD);
   const top = new THREE.Mesh(topGeo, bodyMat);
   top.name = "top";
@@ -164,22 +163,21 @@ export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
     g.add(kick);
   }
 
-  // Optional bottom drawers
+  // Bottom drawers (fronts only; enough for layout/visual)
   const drawerCount = Math.max(0, Math.min(6, Math.round(p.drawerCount)));
   const drawerHeights = (Array.isArray(p.drawerFrontHeights) ? p.drawerFrontHeights : []).slice(0, drawerCount);
   while (drawerHeights.length < drawerCount) drawerHeights.push(drawerHeights[drawerHeights.length - 1] ?? 200);
 
   const frontPlaneZ = depth / 2 + frontT / 2;
   const frontW = Math.max(0.05, width - 2 * sideGap);
-  const hasDrawers = drawerCount > 0;
-  let cursorY = plinthH + boardT + (hasDrawers ? bottomGap : 0);
+  let cursorY = plinthH + boardT + bottomGap;
   for (let i = 0; i < drawerCount; i++) {
     const h = Math.max(0.02, (drawerHeights[i] ?? 200) * MM_TO_M);
     const geo = new THREE.BoxGeometry(frontW, h, frontT);
-    const front = new THREE.Mesh(geo, drawerMat);
+    const front = new THREE.Mesh(geo, frontMat);
     front.name = `drawerFront_${i + 1}`;
     front.position.set(0, cursorY + h / 2, frontPlaneZ);
-    setPartMeta(front, { width: frontW, height: h, depth: frontT }, "height", p.materials.drawerPbr ?? p.materials.frontPbr);
+    setPartMeta(front, { width: frontW, height: h, depth: frontT }, "height");
     setParamKeys(front, [
       "drawerCount",
       "drawerFrontHeights",
@@ -199,90 +197,132 @@ export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
     cursorY += h + (i === drawerCount - 1 ? 0 : frontGap);
   }
 
-  const drawersTopY = cursorY + (hasDrawers ? Math.max(0, p.gapAboveDrawersMm) * MM_TO_M : 0);
-  if (hasDrawers) {
-    const div1Y = drawersTopY + boardT / 2;
-    addDivider("divider_drawers", div1Y, ["gapAboveDrawersMm", "drawerFrontHeights", "boardThickness"]);
+  const drawersTopY = cursorY + Math.max(0, p.gapAboveDrawersMm) * MM_TO_M;
+
+  // Divider above drawers
+  const div1Y = drawersTopY + boardT / 2;
+  addDivider("divider_drawers", div1Y, ["gapAboveDrawersMm", "drawerFrontHeights", "boardThickness"]);
+
+  // Oven niche zone
+  const ovenZoneStartY = drawersTopY + boardT;
+  const ovenZoneH =
+    (Math.max(0, p.ovenHeightMm) + Math.max(0, p.ovenTopClearanceMm) + Math.max(0, p.ovenBottomClearanceMm)) * MM_TO_M;
+  const ovenZoneTopY = ovenZoneStartY + ovenZoneH;
+
+  const div2Y = ovenZoneTopY + boardT / 2;
+  addDivider("divider_oven", div2Y, ["ovenHeightMm", "ovenTopClearanceMm", "ovenBottomClearanceMm", "boardThickness"]);
+
+  // Microwave niche zone
+  const between = Math.max(0, p.gapBetweenAppliancesMm) * MM_TO_M;
+  const mwZoneStartY = ovenZoneTopY + boardT + between;
+  const mwZoneH =
+    (Math.max(0, p.microwaveHeightMm) +
+      Math.max(0, p.microwaveTopClearanceMm) +
+      Math.max(0, p.microwaveBottomClearanceMm)) *
+    MM_TO_M;
+  const mwZoneTopY = mwZoneStartY + mwZoneH;
+
+  const div3Y = mwZoneTopY + boardT / 2;
+  if (div3Y + boardT / 2 < height - boardT - 0.001) {
+    addDivider("divider_microwave", div3Y, ["microwaveHeightMm", "microwaveTopClearanceMm", "microwaveBottomClearanceMm", "boardThickness"]);
   }
 
-  // Fridge niche zone
-  const fridgeZoneStartY = hasDrawers ? drawersTopY + boardT : plinthH + boardT;
-  const fridgeZoneH =
-    (Math.max(0, p.fridgeHeightMm) + Math.max(0, p.fridgeTopClearanceMm) + Math.max(0, p.fridgeBottomClearanceMm)) * MM_TO_M;
-  const fridgeZoneTopY = fridgeZoneStartY + fridgeZoneH;
-
-  // Two-piece door fronts (freezer bottom + fridge top).
+  // Top cabinet section (fills the rest so there is no empty void)
   {
-    const doorW = Math.max(0.05, width - 2 * sideGap);
-    const gap = Math.max(0, p.fridgeDoorGapMm) * MM_TO_M;
-    const zoneH = Math.max(0.12, fridgeZoneH);
-    const freezerH = clamp(Math.max(0.05, p.freezerDoorHeightMm * MM_TO_M), 0.08, Math.max(0.08, zoneH - gap - 0.08));
-    const fridgeH = Math.max(0.08, zoneH - freezerH - gap);
+    const topMinY = mwZoneTopY + boardT;
+    const topMaxY = height - boardT;
+    const topH = Math.max(0.001, topMaxY - topMinY);
+    if (topH > 0.08) {
+      const shelfCount = Math.max(1, Math.min(8, Math.round(p.topShelfCount)));
+      const internalShelfCount = Math.max(0, shelfCount - 1);
+      const shelfT = Math.max(0.005, p.topShelfThickness * MM_TO_M);
+      const free = Math.max(0.001, topH - internalShelfCount * shelfT);
+      const gap = free / shelfCount;
 
-    const doorPlaneZ = depth / 2 + frontT / 2;
+      for (let i = 0; i < internalShelfCount; i++) {
+        const y = topMinY + gap * (i + 1) + shelfT * (i + 0.5);
+        const geo = new THREE.BoxGeometry(internalW, shelfT, internalD);
+        const shelf = new THREE.Mesh(geo, bodyMat);
+        shelf.name = `topShelf_${i + 1}`;
+        shelf.position.set(0, y, interiorCenterZ);
+        setPartMeta(shelf, { width: internalW, height: shelfT, depth: internalD }, "width");
+        setParamKeys(shelf, ["topShelfCount", "topShelfThickness", "height", "boardThickness"]);
+        g.add(shelf);
+      }
 
-    const freezerGeo = new THREE.BoxGeometry(doorW, freezerH, frontT);
-    const freezerDoor = new THREE.Mesh(freezerGeo, frontMat);
-    freezerDoor.name = "freezerDoorFront";
-    freezerDoor.position.set(0, fridgeZoneStartY + freezerH / 2, doorPlaneZ);
-    setPartMeta(freezerDoor, { width: doorW, height: freezerH, depth: frontT }, "height", p.materials.frontPbr);
-    setParamKeys(freezerDoor, [
-      "freezerDoorHeightMm",
-      "fridgeDoorGapMm",
-      "fridgeHeightMm",
-      "fridgeTopClearanceMm",
-      "fridgeBottomClearanceMm",
-      "sideGap",
-      "frontThicknessMm",
-      "handleType",
-      "handlePositionMm",
-      "handleLengthMm",
-      "handleSizeMm",
-      "handleProjectionMm"
-    ]);
-    g.add(freezerDoor);
-    addSplitSideHandle(freezerDoor, "freezerDoor_handle", doorW, freezerH, frontT, "nearTop");
+      // Upward-opening flap door (hinged at the top edge).
+      const doorW = Math.max(0.05, width - 2 * sideGap);
+      const doorH = Math.max(0.05, topH - topGap);
+      const doorTopY = topMinY + topGap + doorH;
+      const doorPlaneZ = depth / 2 + frontT / 2;
+      const openAngle = p.topFlapOpen ? -Math.PI / 2 : 0;
 
-    const fridgeGeo = new THREE.BoxGeometry(doorW, fridgeH, frontT);
-    const fridgeDoor = new THREE.Mesh(fridgeGeo, frontMat);
-    fridgeDoor.name = "fridgeDoorFront";
-    fridgeDoor.position.set(0, fridgeZoneStartY + freezerH + gap + fridgeH / 2, doorPlaneZ);
-    setPartMeta(fridgeDoor, { width: doorW, height: fridgeH, depth: frontT }, "height", p.materials.frontPbr);
-    setParamKeys(fridgeDoor, [
-      "freezerDoorHeightMm",
-      "fridgeDoorGapMm",
-      "fridgeHeightMm",
-      "fridgeTopClearanceMm",
-      "fridgeBottomClearanceMm",
-      "sideGap",
-      "frontThicknessMm",
-      "handleType",
-      "handlePositionMm",
-      "handleLengthMm",
-      "handleSizeMm",
-      "handleProjectionMm"
-    ]);
-    g.add(fridgeDoor);
-    addSplitSideHandle(fridgeDoor, "fridgeDoor_handle", doorW, fridgeH, frontT, "nearBottom");
+      const pivot = new THREE.Group();
+      pivot.name = "topFlap_pivot";
+      pivot.position.set(0, doorTopY, doorPlaneZ);
+      pivot.rotation.x = openAngle;
+
+      const doorGeo = new THREE.BoxGeometry(doorW, doorH, frontT);
+      const door = new THREE.Mesh(doorGeo, frontMat);
+      door.name = "topFlap";
+      // Pivot at top edge: door center is below the hinge line.
+      door.position.set(0, -doorH / 2, 0);
+      setPartMeta(door, { width: doorW, height: doorH, depth: frontT }, "height");
+      setParamKeys(door, ["topFlapOpen", "topHingeCount", "topHingeInsetFromSideMm", "topShelfCount", "sideGap", "topGap", "frontThicknessMm"]);
+      pivot.add(door);
+
+      // Simple top hinges along X
+      const hingeCount = clampInt(p.topHingeCount, 1, 6);
+      const inset = Math.max(0, p.topHingeInsetFromSideMm) * MM_TO_M;
+      const hingeW = 0.03;
+      const hingeH = 0.008;
+      const hingeD = 0.014;
+      const hingeGeo = new THREE.BoxGeometry(hingeW, hingeH, hingeD);
+      const hingeZ = -frontT / 2 - hingeD / 2 - 0.001;
+      const xs = computeHingeXs(doorW, hingeCount, inset);
+      xs.forEach((x, idx) => {
+        const h = new THREE.Mesh(hingeGeo, hingeMat);
+        h.name = `topFlap_hinge_${idx + 1}`;
+        h.position.set(x, -hingeH / 2, hingeZ);
+        h.userData.selectable = false;
+        pivot.add(h);
+      });
+
+      addCenteredHandle(door, "topFlap_handle", doorW, doorH, frontT);
+      g.add(pivot);
+    }
   }
 
-  // Fridge dummy (visual only)
+  // Appliances dummies
   addApplianceDummy({
-    name: "fridge",
-    nicheW: Math.max(0.05, Math.max(0, p.fridgeWidthMm) * MM_TO_M),
-    nicheH: Math.max(0.05, Math.max(0, p.fridgeHeightMm) * MM_TO_M),
-    nicheD: Math.max(0.05, Math.max(0, p.fridgeDepthMm) * MM_TO_M),
-    sideClear: Math.max(0, p.fridgeSideClearanceMm) * MM_TO_M,
-    topClear: Math.max(0, p.fridgeTopClearanceMm) * MM_TO_M,
-    bottomClear: Math.max(0, p.fridgeBottomClearanceMm) * MM_TO_M,
-    zoneMinY: fridgeZoneStartY,
+    name: "oven",
+    nicheW: Math.max(0.05, (Math.max(0, p.ovenWidthMm) * MM_TO_M)),
+    nicheH: Math.max(0.05, Math.max(0, p.ovenHeightMm) * MM_TO_M),
+    nicheD: Math.max(0.05, Math.max(0, p.ovenDepthMm) * MM_TO_M),
+    sideClear: Math.max(0, p.ovenSideClearanceMm) * MM_TO_M,
+    topClear: Math.max(0, p.ovenTopClearanceMm) * MM_TO_M,
+    bottomClear: Math.max(0, p.ovenBottomClearanceMm) * MM_TO_M,
+    zoneMinY: ovenZoneStartY,
+    frontZ: depth / 2 - 0.002,
+    host: g
+  });
+
+  addApplianceDummy({
+    name: "microwave",
+    nicheW: Math.max(0.05, (Math.max(0, p.microwaveWidthMm) * MM_TO_M)),
+    nicheH: Math.max(0.05, Math.max(0, p.microwaveHeightMm) * MM_TO_M),
+    nicheD: Math.max(0.05, Math.max(0, p.microwaveDepthMm) * MM_TO_M),
+    sideClear: Math.max(0, p.microwaveSideClearanceMm) * MM_TO_M,
+    topClear: Math.max(0, p.microwaveTopClearanceMm) * MM_TO_M,
+    bottomClear: Math.max(0, p.microwaveBottomClearanceMm) * MM_TO_M,
+    zoneMinY: mwZoneStartY,
     frontZ: depth / 2 - 0.002,
     host: g
   });
 
   return g;
 
-  function addDivider(name: string, y: number, keys: Array<keyof FridgeTallParams | string>) {
+  function addDivider(name: string, y: number, keys: Array<keyof MicrowaveOvenTallParams | string>) {
     if (y + boardT / 2 >= height - boardT - 0.001) return;
     const geo = new THREE.BoxGeometry(internalW, boardT, internalD);
     const d = new THREE.Mesh(geo, bodyMat);
@@ -328,108 +368,24 @@ export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
     if (p.handleType === "knob") {
       const r = clamp(handleSize > 0 ? handleSize / 2 : 0.01, 0.006, 0.03);
       const d = clamp(handleProj > 0 ? handleProj : 0.02, 0.006, 0.06);
-      const geo = new THREE.SphereGeometry(r, 18, 12);
+      const geo = new THREE.CylinderGeometry(r, r, d, 20);
       const m = new THREE.Mesh(geo, railMat);
       m.name = name;
+      m.rotation.x = Math.PI / 2;
       m.position.set(0, y, t / 2 + d / 2);
       front.add(m);
       return;
     }
 
     // cup
-    const hw = clamp(handleLen > 0 ? handleLen : Math.min(w * 0.6, 0.35), 0.06, w * 0.95);
-    const r = clamp(handleSize > 0 ? handleSize / 2 : 0.01, 0.006, 0.03);
+    const hw = clamp(handleLen > 0 ? handleLen : Math.min(w * 0.45, 0.22), 0.06, w * 0.9);
+    const r = clamp(handleSize > 0 ? handleSize / 2 : 0.008, 0.006, 0.03);
     const d = clamp(handleProj > 0 ? handleProj : 0.02, 0.006, 0.06);
     const geo = new THREE.CapsuleGeometry(r, Math.max(0.001, hw - 2 * r), 8, 20);
     const m = new THREE.Mesh(geo, railMat);
     m.name = name;
     m.rotation.z = Math.PI / 2;
     m.position.set(0, y, t / 2 + d / 2);
-    front.add(m);
-  }
-
-  // For fridge doors we want "two handles above each other" near the split line and near the side edge.
-  // Bottom (freezer) handle: near top edge. Top (fridge) handle: near bottom edge.
-  function addSplitSideHandle(
-    front: THREE.Mesh,
-    name: string,
-    w: number,
-    h: number,
-    t: number,
-    where: "nearTop" | "nearBottom"
-  ) {
-    if (p.handleType === "none") return;
-
-    const handleLen = Math.max(0, p.handleLengthMm) * MM_TO_M;
-    const handleSizeMm = Math.max(0, p.handleSizeMm);
-    const handleSize = handleSizeMm * MM_TO_M;
-    const handleProj = Math.max(0, p.handleProjectionMm) * MM_TO_M;
-
-    // X near edge (right side by default, matches common fridge layout).
-    const edgeInsetMm = 50;
-    const xEdge = w / 2 - Math.max(8, edgeInsetMm) * MM_TO_M;
-
-    // Y near the split line (as close as reasonable given handle size).
-    const userOffsetMm = Number((p as any).doorHandleOffsetFromSplitMm);
-    const splitInsetMm = Number.isFinite(userOffsetMm)
-      ? clamp(userOffsetMm, 0, 120)
-      : clamp(handleSizeMm > 0 ? handleSizeMm / 2 + 8 : 14, 8, 30);
-    const y = where === "nearTop" ? h / 2 - splitInsetMm * MM_TO_M : -h / 2 + splitInsetMm * MM_TO_M;
-
-    if (p.handleType === "gola") {
-      const golaH = clamp(handleSize, 0.006, 0.05);
-      const golaD = clamp(handleProj, 0.006, 0.04);
-      const golaW = clamp(handleLen > 0 ? handleLen : Math.min(w * 0.45, 0.28), 0.06, w);
-      const geo = new THREE.BoxGeometry(golaW, golaH, golaD);
-      const m = new THREE.Mesh(geo, railMat);
-      m.name = name;
-      // Rotate so the "length" runs vertically.
-      m.rotation.z = Math.PI / 2;
-      // After rotation, X extent becomes golaH.
-      const cx = clamp(xEdge - golaH / 2, -w / 2 + golaH / 2, w / 2 - golaH / 2);
-      m.position.set(cx, y, t / 2 - golaD / 2 + 0.002);
-      front.add(m);
-      return;
-    }
-
-    if (p.handleType === "bar") {
-      const hw = clamp(handleLen > 0 ? handleLen : Math.min(w * 0.5, 0.28), 0.06, w * 0.95);
-      const hh = clamp(handleSize > 0 ? handleSize : 0.012, 0.006, 0.05);
-      const hd = clamp(handleProj > 0 ? handleProj : 0.012, 0.006, 0.06);
-      const geo = new THREE.BoxGeometry(hw, hh, hd);
-      const m = new THREE.Mesh(geo, railMat);
-      m.name = name;
-      // Rotate so the "length" runs vertically.
-      m.rotation.z = Math.PI / 2;
-      // After rotation, X extent becomes hh.
-      const cx = clamp(xEdge - hh / 2, -w / 2 + hh / 2, w / 2 - hh / 2);
-      m.position.set(cx, y, t / 2 + hd / 2);
-      front.add(m);
-      return;
-    }
-
-    if (p.handleType === "knob") {
-      const r = clamp(handleSize > 0 ? handleSize / 2 : 0.01, 0.006, 0.03);
-      const d = clamp(handleProj > 0 ? handleProj : 0.02, 0.006, 0.06);
-      const geo = new THREE.SphereGeometry(r, 18, 12);
-      const m = new THREE.Mesh(geo, railMat);
-      m.name = name;
-      const cx = clamp(xEdge, -w / 2 + r, w / 2 - r);
-      m.position.set(cx, y, t / 2 + d / 2);
-      front.add(m);
-      return;
-    }
-
-    // cup
-    const hw = clamp(handleLen > 0 ? handleLen : Math.min(w * 0.5, 0.28), 0.06, w * 0.95);
-    const r = clamp(handleSize > 0 ? handleSize / 2 : 0.01, 0.006, 0.03);
-    const d = clamp(handleProj > 0 ? handleProj : 0.02, 0.006, 0.06);
-    const geo = new THREE.CapsuleGeometry(r, Math.max(0.001, hw - 2 * r), 8, 20);
-    const m = new THREE.Mesh(geo, railMat);
-    m.name = name;
-    // Capsule is vertical by default (axis along Y).
-    const cx = clamp(xEdge, -w / 2 + r, w / 2 - r);
-    m.position.set(cx, y, t / 2 + d / 2);
     front.add(m);
   }
 
@@ -453,43 +409,89 @@ export function buildFridgeTall(p: FridgeTallParams): THREE.Group {
     const baseY = args.zoneMinY + args.bottomClear;
     const zFront = args.frontZ;
 
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0x141821, roughness: 0.85, metalness: 0.06 });
+    const ovenBodyMat = new THREE.MeshStandardMaterial({ color: 0x1b1f27, roughness: 0.75, metalness: 0.08 });
+    const glassMat = new THREE.MeshStandardMaterial({
+      color: 0x0a0d12,
+      roughness: 0.08,
+      metalness: 0.0,
+      transparent: true,
+      opacity: 0.55
+    });
+
     const r = Math.min(0.016, Math.max(0.004, Math.min(w, h) * 0.04));
     const bezelT = Math.min(0.03, Math.max(0.016, d * 0.06));
     const backD = Math.max(0.05, d - bezelT);
 
-    // Small face trim so the niche is visually readable.
-    const trimOverlapX = 0.01;
-    const trimOverlapY = 0.01;
+    // Appliance face trim:
+    // - oven: larger trim to cover carcass front edges (typical 595/600 style)
+    // - microwave: visibly smaller face (still with side overlap), height should stay close to appliance height
+    const isMicrowave = args.name === "microwave";
+    const trimOverlapX = isMicrowave ? 0.0175 : Math.min(0.04, Math.max(0.022, boardT + 0.004)); // ~35mm total for MW => ~595mm face on 560 niche
+    const trimOverlapY = isMicrowave ? 0.005 : Math.min(0.04, Math.max(0.022, boardT + 0.004));
     const trimW = Math.min(width - 0.004, w + 2 * trimOverlapX);
-    const trimH = Math.min(h + 2 * trimOverlapY, h + 0.04);
-    const trimT = 0.01;
-    const trimGeo = new RoundedBoxGeometry(trimW, trimH, trimT, 6, Math.min(r * 1.2, 0.018));
-    const trim = new THREE.Mesh(trimGeo, bodyMat);
+    const trimH = isMicrowave ? Math.min(h + 2 * trimOverlapY, h + 0.01) : Math.min(h + 2 * trimOverlapY, h + 0.08);
+    const trimT = 0.012;
+    const trimR = Math.min(r * 1.2, 0.018);
+    const trimMat = new THREE.MeshStandardMaterial({ color: 0x0b0e14, roughness: 0.35, metalness: 0.18 });
+    const trimGeo = new RoundedBoxGeometry(trimW, trimH, trimT, 6, trimR);
+    const trim = new THREE.Mesh(trimGeo, trimMat);
     trim.name = `${args.name}_dummy_trim`;
     trim.position.set(0, baseY + h / 2, zFront + trimT / 2 + 0.0005);
-    trim.userData.selectable = false;
     args.host.add(trim);
 
     const bodyBackGeo = new THREE.BoxGeometry(w, h, backD);
-    const bodyBack = new THREE.Mesh(bodyBackGeo, bodyMat);
+    const bodyBack = new THREE.Mesh(bodyBackGeo, ovenBodyMat);
     bodyBack.name = `${args.name}_dummy_body`;
     bodyBack.position.set(0, baseY + h / 2, zFront - bezelT - backD / 2);
-    bodyBack.userData.selectable = false;
     args.host.add(bodyBack);
 
     const bezelGeo = new RoundedBoxGeometry(w, h, bezelT, 6, r);
-    const bezel = new THREE.Mesh(bezelGeo, bodyMat);
+    const bezelMat = new THREE.MeshStandardMaterial({ color: 0x10141b, roughness: 0.45, metalness: 0.18 });
+    const bezel = new THREE.Mesh(bezelGeo, bezelMat);
     bezel.name = `${args.name}_dummy_bezel`;
     bezel.position.set(0, baseY + h / 2, zFront - bezelT / 2);
-    bezel.userData.selectable = false;
     args.host.add(bezel);
+
+    const glassT = Math.min(0.01, bezelT * 0.45);
+    const glassGeo = new RoundedBoxGeometry(w * 0.92, h * 0.78, glassT, 6, r * 0.65);
+    const glass = new THREE.Mesh(glassGeo, glassMat);
+    glass.name = `${args.name}_dummy_glass`;
+    glass.position.set(0, baseY + h * 0.46, zFront - glassT / 2);
+    args.host.add(glass);
+
+    const handleW = Math.min(w * 0.6, 0.36);
+    const handleH = 0.012;
+    const handleD = 0.02;
+    const handleGeo = new RoundedBoxGeometry(handleW, handleH, handleD, 4, handleH * 0.4);
+    const handleMat = new THREE.MeshStandardMaterial({ color: 0x3a3f4b, roughness: 0.35, metalness: 0.55 });
+    const handle = new THREE.Mesh(handleGeo, handleMat);
+    handle.name = `${args.name}_dummy_handle`;
+    handle.position.set(0, baseY + h * 0.78, zFront + handleD / 2);
+    args.host.add(handle);
   }
 }
 
 function parseHexColor(hex: string): number {
   if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return 0xffffff;
   return Number.parseInt(hex.slice(1), 16);
+}
+
+function clampInt(value: unknown, min: number, max: number) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+function computeHingeXs(doorW: number, count: number, inset: number) {
+  const c = Math.max(1, Math.round(count));
+  if (c === 1) return [0];
+  const minX = -doorW / 2 + inset;
+  const maxX = doorW / 2 - inset;
+  const span = Math.max(0.001, maxX - minX);
+  const step = span / (c - 1);
+  const xs: number[] = [];
+  for (let i = 0; i < c; i++) xs.push(minX + step * i);
+  return xs;
 }
 
 function clamp(value: number, min: number, max: number) {

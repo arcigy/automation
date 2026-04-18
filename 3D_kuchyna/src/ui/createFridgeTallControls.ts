@@ -4,7 +4,6 @@ type ControlApi = { syncFromParams: () => void };
 
 type CreateControlsArgs = {
   onChange: () => void;
-  getWorktopThicknessMm: () => number;
 };
 
 export function createFridgeTallControls(container: HTMLElement, params: FridgeTallParams, args: CreateControlsArgs): ControlApi {
@@ -15,6 +14,23 @@ export function createFridgeTallControls(container: HTMLElement, params: FridgeT
   container.appendChild(grid);
 
   const numberFields: Array<{ key: keyof FridgeTallParams; input: HTMLInputElement }> = [];
+  const keyFields: Array<{
+    key: "materials.bodyKey" | "materials.frontKey" | "materials.drawerKey";
+    input: HTMLInputElement;
+  }> = [];
+  const colorFields: Array<{
+    key: "materials.bodyColor" | "materials.frontColor" | "materials.drawerColor";
+    input: HTMLInputElement;
+  }> = [];
+  let bodyTextureRotation: HTMLSelectElement | null = null;
+  let bodyTintColor: HTMLInputElement | null = null;
+  let bodyTintStrength: HTMLInputElement | null = null;
+  let frontTextureRotation: HTMLSelectElement | null = null;
+  let frontTintColor: HTMLInputElement | null = null;
+  let frontTintStrength: HTMLInputElement | null = null;
+  let drawerTextureRotation: HTMLSelectElement | null = null;
+  let drawerTintColor: HTMLInputElement | null = null;
+  let drawerTintStrength: HTMLInputElement | null = null;
   let fridgePresetSelect: HTMLSelectElement | null = null;
 
   const addNumber = (key: keyof FridgeTallParams, label: string, opts: { min?: number; step?: number } = {}) => {
@@ -33,6 +49,40 @@ export function createFridgeTallControls(container: HTMLElement, params: FridgeT
     wrap.appendChild(input);
     grid.appendChild(wrap);
     numberFields.push({ key, input });
+  };
+
+  const addKey = (key: "materials.bodyKey" | "materials.frontKey" | "materials.drawerKey", label: string) => {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    lab.htmlFor = `f_${key.replace(".", "_")}`;
+    const input = document.createElement("input");
+    input.id = `f_${key.replace(".", "_")}`;
+    input.type = "text";
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    grid.appendChild(wrap);
+    keyFields.push({ key, input });
+  };
+
+  const addColor = (key: "materials.bodyColor" | "materials.frontColor" | "materials.drawerColor", label: string) => {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.style.gridTemplateColumns = "1fr 120px";
+
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    lab.htmlFor = `f_${key.replace(".", "_")}`;
+
+    const input = document.createElement("input");
+    input.id = `f_${key.replace(".", "_")}`;
+    input.type = "color";
+
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    grid.appendChild(wrap);
+    colorFields.push({ key, input });
   };
 
   // Base
@@ -146,6 +196,135 @@ export function createFridgeTallControls(container: HTMLElement, params: FridgeT
 
   // No top cabinet in this variant (the unit ends at the fridge height).
 
+  // Materials
+  addKey("materials.bodyKey", "Body key");
+  addKey("materials.frontKey", "Front key");
+  addKey("materials.drawerKey", "Drawer key");
+  addColor("materials.bodyColor", "Body color");
+  addColor("materials.frontColor", "Front color");
+  addColor("materials.drawerColor", "Drawer color");
+
+  // Body texture rotation
+  {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.style.gridTemplateColumns = "1fr 120px";
+    const lab = document.createElement("label");
+    lab.textContent = "Body texture rotation";
+    lab.htmlFor = "f_bodyTextureRotation";
+    const sel = document.createElement("select");
+    sel.id = "f_bodyTextureRotation";
+    sel.innerHTML = `
+      <option value="0">0Â°</option>
+      <option value="90">90Â°</option>
+      <option value="180">180Â°</option>
+      <option value="270">270Â°</option>
+    `;
+    wrap.appendChild(lab);
+    wrap.appendChild(sel);
+    grid.appendChild(wrap);
+    bodyTextureRotation = sel;
+  }
+
+  // Body tint
+  {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.style.gridTemplateColumns = "1fr 120px";
+    const lab = document.createElement("label");
+    lab.textContent = "Body wood tint";
+    lab.htmlFor = "f_bodyTintColor";
+    const input = document.createElement("input");
+    input.id = "f_bodyTintColor";
+    input.type = "color";
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    grid.appendChild(wrap);
+    bodyTintColor = input;
+  }
+  {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.style.gridTemplateColumns = "1fr 120px";
+    const lab = document.createElement("label");
+    lab.textContent = "Body tint strength";
+    lab.htmlFor = "f_bodyTintStrength";
+    const input = document.createElement("input");
+    input.id = "f_bodyTintStrength";
+    input.type = "number";
+    input.min = "0";
+    input.max = "100";
+    input.step = "1";
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    grid.appendChild(wrap);
+    bodyTintStrength = input;
+  }
+
+  const addTextureRotation = (id: string, label: string) => {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.style.gridTemplateColumns = "1fr 120px";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    lab.htmlFor = id;
+    const sel = document.createElement("select");
+    sel.id = id;
+    sel.innerHTML = `
+      <option value="0">0°</option>
+      <option value="90">90°</option>
+      <option value="180">180°</option>
+      <option value="270">270°</option>
+    `;
+    wrap.appendChild(lab);
+    wrap.appendChild(sel);
+    grid.appendChild(wrap);
+    return sel;
+  };
+
+  const addTintColor = (id: string, label: string) => {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.style.gridTemplateColumns = "1fr 120px";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    lab.htmlFor = id;
+    const input = document.createElement("input");
+    input.id = id;
+    input.type = "color";
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    grid.appendChild(wrap);
+    return input;
+  };
+
+  const addTintStrength = (id: string, label: string) => {
+    const wrap = document.createElement("div");
+    wrap.className = "field";
+    wrap.style.gridTemplateColumns = "1fr 120px";
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    lab.htmlFor = id;
+    const input = document.createElement("input");
+    input.id = id;
+    input.type = "number";
+    input.min = "0";
+    input.max = "100";
+    input.step = "1";
+    wrap.appendChild(lab);
+    wrap.appendChild(input);
+    grid.appendChild(wrap);
+    return input;
+  };
+
+  frontTextureRotation = addTextureRotation("f_frontTextureRotation", "Front texture rotation");
+  frontTintColor = addTintColor("f_frontTintColor", "Front wood tint");
+  frontTintStrength = addTintStrength("f_frontTintStrength", "Front tint strength");
+
+  drawerTextureRotation = addTextureRotation("f_drawerTextureRotation", "Drawer texture rotation");
+  drawerTintColor = addTintColor("f_drawerTintColor", "Drawer wood tint");
+  drawerTintStrength = addTintStrength("f_drawerTintStrength", "Drawer tint strength");
+
   const readNumber = (input: HTMLInputElement, fallback: number) => {
     const n = Number(input.value);
     return Number.isFinite(n) ? n : fallback;
@@ -168,6 +347,25 @@ export function createFridgeTallControls(container: HTMLElement, params: FridgeT
       const value = params[f.key];
       f.input.value = typeof value === "number" ? String(value) : "";
     }
+
+    for (const f of keyFields) {
+      const [_, k] = f.key.split(".") as ["materials", keyof FridgeTallParams["materials"]];
+      f.input.value = String((params.materials as any)[k] ?? "");
+    }
+    for (const f of colorFields) {
+      const [_, k] = f.key.split(".") as ["materials", keyof FridgeTallParams["materials"]];
+      f.input.value = String((params.materials as any)[k] ?? "#ffffff");
+    }
+    if (bodyTextureRotation) bodyTextureRotation.value = String(params.materials.bodyPbr?.rotationDeg ?? 0);
+    if (bodyTintColor) bodyTintColor.value = params.materials.bodyPbr?.tintColor ?? "#ffffff";
+    if (bodyTintStrength) bodyTintStrength.value = String(Math.round((params.materials.bodyPbr?.tintStrength ?? 0) * 100));
+    if (frontTextureRotation) frontTextureRotation.value = String(params.materials.frontPbr?.rotationDeg ?? 0);
+    if (frontTintColor) frontTintColor.value = params.materials.frontPbr?.tintColor ?? "#ffffff";
+    if (frontTintStrength) frontTintStrength.value = String(Math.round((params.materials.frontPbr?.tintStrength ?? 0) * 100));
+    if (drawerTextureRotation) drawerTextureRotation.value = String(params.materials.drawerPbr?.rotationDeg ?? 0);
+    if (drawerTintColor) drawerTintColor.value = params.materials.drawerPbr?.tintColor ?? "#ffffff";
+    if (drawerTintStrength) drawerTintStrength.value = String(Math.round((params.materials.drawerPbr?.tintStrength ?? 0) * 100));
+
     heights.value = params.drawerFrontHeights.join(", ");
     handleType.value = (params.handleType as any) ?? "none";
     if (fridgePresetSelect) {
@@ -205,6 +403,45 @@ export function createFridgeTallControls(container: HTMLElement, params: FridgeT
     params.drawerFrontHeights = normalizeHeights(typed, params.drawerCount);
     heights.value = params.drawerFrontHeights.join(", ");
 
+    for (const f of keyFields) {
+      const [_, k] = f.key.split(".") as ["materials", keyof FridgeTallParams["materials"]];
+      (params.materials as any)[k] = f.input.value;
+    }
+    for (const f of colorFields) {
+      const [_, k] = f.key.split(".") as ["materials", keyof FridgeTallParams["materials"]];
+      (params.materials as any)[k] = f.input.value;
+    }
+
+    if (bodyTextureRotation) {
+      if (!params.materials.bodyPbr) params.materials.bodyPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
+      params.materials.bodyPbr.rotationDeg = (Number(bodyTextureRotation.value) as 0 | 90 | 180 | 270) ?? 0;
+    }
+    if (bodyTintColor || bodyTintStrength) {
+      if (!params.materials.bodyPbr) params.materials.bodyPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
+      if (bodyTintColor) params.materials.bodyPbr.tintColor = bodyTintColor.value;
+      if (bodyTintStrength) params.materials.bodyPbr.tintStrength = Number(bodyTintStrength.value) / 100;
+    }
+
+    if (frontTextureRotation) {
+      if (!params.materials.frontPbr) params.materials.frontPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
+      params.materials.frontPbr.rotationDeg = (Number(frontTextureRotation.value) as 0 | 90 | 180 | 270) ?? 0;
+    }
+    if (frontTintColor || frontTintStrength) {
+      if (!params.materials.frontPbr) params.materials.frontPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
+      if (frontTintColor) params.materials.frontPbr.tintColor = frontTintColor.value;
+      if (frontTintStrength) params.materials.frontPbr.tintStrength = Number(frontTintStrength.value) / 100;
+    }
+
+    if (drawerTextureRotation) {
+      if (!params.materials.drawerPbr) params.materials.drawerPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
+      params.materials.drawerPbr.rotationDeg = (Number(drawerTextureRotation.value) as 0 | 90 | 180 | 270) ?? 0;
+    }
+    if (drawerTintColor || drawerTintStrength) {
+      if (!params.materials.drawerPbr) params.materials.drawerPbr = { id: "wood_veneer_oak_7760_1k", rotationDeg: 0 };
+      if (drawerTintColor) params.materials.drawerPbr.tintColor = drawerTintColor.value;
+      if (drawerTintStrength) params.materials.drawerPbr.tintStrength = Number(drawerTintStrength.value) / 100;
+    }
+
     updateUiState();
     args.onChange();
   };
@@ -214,6 +451,17 @@ export function createFridgeTallControls(container: HTMLElement, params: FridgeT
   }
   heights.addEventListener("input", onInputsChanged);
   handleType.addEventListener("change", onInputsChanged);
+  for (const f of keyFields) f.input.addEventListener("input", onInputsChanged);
+  for (const f of colorFields) f.input.addEventListener("input", onInputsChanged);
+  bodyTextureRotation?.addEventListener("change", onInputsChanged);
+  bodyTintColor?.addEventListener("input", onInputsChanged);
+  bodyTintStrength?.addEventListener("input", onInputsChanged);
+  frontTextureRotation?.addEventListener("change", onInputsChanged);
+  frontTintColor?.addEventListener("input", onInputsChanged);
+  frontTintStrength?.addEventListener("input", onInputsChanged);
+  drawerTextureRotation?.addEventListener("change", onInputsChanged);
+  drawerTintColor?.addEventListener("input", onInputsChanged);
+  drawerTintStrength?.addEventListener("input", onInputsChanged);
 
   syncFromParams();
   return { syncFromParams };
