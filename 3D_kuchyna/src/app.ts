@@ -806,6 +806,13 @@ export function startApp(args: AppArgs) {
   type LayoutSnapshot = {
     wallCounter: number;
     walls: Array<{ id: string; params: WallParams }>;
+    instanceCounter: number;
+    instances: Array<{
+      id: string;
+      params: ModuleParams;
+      positionMm: { x: number; z: number };
+      rotationYDeg: number;
+    }>;
     dimensionCounter: number;
     dimensions: DimensionParams[];
     pinnedWallIds: string[];
@@ -833,11 +840,14 @@ export function startApp(args: AppArgs) {
     const w = s.walls
       .map((x) => `${x.id}:${x.params.aMm.x},${x.params.aMm.z}-${x.params.bMm.x},${x.params.bMm.z}:${x.params.thicknessMm}:${(x.params as any).justification ?? "center"}:${x.params.exteriorSign ?? 1}`)
       .join("|");
+    const mods = (s.instances ?? [])
+      .map((m) => `${m.id}:${m.params?.type ?? "?"}:${m.positionMm.x},${m.positionMm.z}:${Math.round((m.rotationYDeg ?? 0) * 10)}`)
+      .join("|");
     const dims = (s.dimensions ?? [])
       .map((d) => `${d.id}:${d.a.wallId}:${d.a.wallLine}:${Math.round(d.a.t * 1000)}-${d.b.wallId}:${d.b.wallLine}:${Math.round(d.b.t * 1000)}:${Math.round(d.offsetM * 1000)}`)
       .join("|");
     const pins = `${s.pinnedWallIds.slice().sort().join(",")}#${s.pinnedInstanceIds.slice().sort().join(",")}#${s.underlayPinned ? 1 : 0}`;
-    return `${s.wallCounter}:${s.dimensionCounter}::${pins}::${w}::${dims}`;
+    return `${s.wallCounter}:${s.instanceCounter}:${s.dimensionCounter}::${pins}::${w}::${mods}::${dims}`;
   };
 
   let undoBtnEl: HTMLButtonElement | null = null;
@@ -852,6 +862,13 @@ export function startApp(args: AppArgs) {
     return {
       wallCounter,
       walls: walls.map((w) => ({ id: w.id, params: copyParams(w.params) })),
+      instanceCounter,
+      instances: instances.map((i) => ({
+        id: i.id,
+        params: JSON.parse(JSON.stringify(i.params)) as ModuleParams,
+        positionMm: { x: Math.round(i.root.position.x * 1000), z: Math.round(i.root.position.z * 1000) },
+        rotationYDeg: (i.root.rotation.y * 180) / Math.PI
+      })),
       dimensionCounter,
       dimensions: dimensions.map((d) => JSON.parse(JSON.stringify(d.params)) as DimensionParams),
       pinnedWallIds: Array.from(pinnedWallIds),
@@ -890,6 +907,7 @@ export function startApp(args: AppArgs) {
     }
 
     wallCounter = snap.wallCounter;
+    instanceCounter = snap.instanceCounter ?? instanceCounter;
     dimensionCounter = snap.dimensionCounter ?? dimensionCounter;
 
     pinnedWallIds.clear();
@@ -897,6 +915,24 @@ export function startApp(args: AppArgs) {
     pinnedInstanceIds.clear();
     for (const id of snap.pinnedInstanceIds) pinnedInstanceIds.add(id);
     underlayState.pinned = !!snap.underlayPinned;
+
+    // Clear modules
+    for (const inst of instances.splice(0, instances.length)) {
+      layoutRoot.remove(inst.root);
+      disposeObject3D(inst.root);
+    }
+
+    // Restore modules
+    if (snap.instances && snap.instances.length > 0) {
+      for (const m of snap.instances) {
+        const inst = createInstance(JSON.parse(JSON.stringify(m.params)) as ModuleParams, { id: m.id });
+        inst.root.position.set(m.positionMm.x / 1000, 0, m.positionMm.z / 1000);
+        inst.root.rotation.y = ((m.rotationYDeg ?? 0) * Math.PI) / 180;
+        layoutRoot.add(inst.root);
+        instances.push(inst);
+      }
+      updateLayoutPanel();
+    }
 
     for (const w of snap.walls) {
       const id = w.id;
@@ -927,10 +963,10 @@ export function startApp(args: AppArgs) {
 
     // Restore selection (best-effort)
     for (const id of snap.selected.wallIds) if (walls.some((w) => w.id === id)) selectedWallIds.add(id);
-    for (const id of snap.selected.instIds) selectedInstanceIds.add(id);
+    for (const id of snap.selected.instIds) if (instances.some((i) => i.id === id)) selectedInstanceIds.add(id);
     if (snap.selected.kind === "wall" && snap.selected.wallId && walls.some((w) => w.id === snap.selected.wallId)) {
       setSelectedWall(snap.selected.wallId);
-    } else if (snap.selected.kind === "module" && snap.selected.instId) {
+    } else if (snap.selected.kind === "module" && snap.selected.instId && instances.some((i) => i.id === snap.selected.instId)) {
       setSelectedModule(snap.selected.instId);
     } else if (snap.selected.kind === "dimension" && snap.selected.dimensionId) {
       setSelectedDimension(snap.selected.dimensionId);
@@ -993,6 +1029,291 @@ export function startApp(args: AppArgs) {
     hoverB: null as THREE.Vector3 | null,
     typedMm: "", // numeric buffer while drawing (e.g. "2500")
     lastPointerPx: { x: 0, y: 0 }
+  };
+
+  const transformState = {
+    kind: null as null | "move" | "rotate",
+    step: null as null | "pickBase" | "pickTarget" | "pickPivot" | "rotating",
+    base: null as THREE.Vector3 | null,
+    pivot: null as THREE.Vector3 | null,
+    typed: "",
+    lastAngleSign: 1,
+    lastPointerPx: { x: 0, y: 0 },
+    selectedWallIds: [] as string[],
+    selectedInstanceIds: [] as string[],
+    startWalls: new Map<string, WallParams>(),
+    startInstances: new Map<string, { pos: THREE.Vector3; rotY: number }>(),
+    startPointerAngle: 0,
+    lastValidDelta: new THREE.Vector3(0, 0, 0),
+    lastValidAngle: 0
+  };
+
+  const clearTransform = (opts?: { restore?: boolean; status?: string | null }) => {
+    if (opts?.restore) {
+      for (const w of walls) {
+        const p = transformState.startWalls.get(w.id);
+        if (p) w.params = JSON.parse(JSON.stringify(p)) as WallParams;
+        rebuildWall(w);
+      }
+      rebuildWallPlanMesh();
+      for (const inst of instances) {
+        const s = transformState.startInstances.get(inst.id);
+        if (s) {
+          inst.root.position.copy(s.pos);
+          inst.root.rotation.y = s.rotY;
+        }
+      }
+      updateLayoutPanel();
+      updateSelectionHighlights();
+      updateDimensionSelectionHighlights();
+      mountProps();
+    }
+
+    transformState.kind = null;
+    transformState.step = null;
+    transformState.base = null;
+    transformState.pivot = null;
+    transformState.typed = "";
+    transformState.lastAngleSign = 1;
+    transformState.selectedWallIds = [];
+    transformState.selectedInstanceIds = [];
+    transformState.startWalls.clear();
+    transformState.startInstances.clear();
+    transformState.startPointerAngle = 0;
+    transformState.lastValidDelta.set(0, 0, 0);
+    transformState.lastValidAngle = 0;
+    if (opts?.status) setUnderlayStatus(opts.status);
+  };
+
+  const startTransformFromSelection = (kind: "move" | "rotate") => {
+    if (mode !== "layout" || viewMode !== "2d" || layoutTool !== "select") return false;
+    if (measureState.enabled) return false;
+    if (dragState.active || windowDragState.active || wallEditHud.drag || marquee.active) return false;
+    if (underlayCal.active) return false;
+
+    const wallIds = selectedWallIds.size > 0 ? Array.from(selectedWallIds) : selectedKind === "wall" && selectedWallId ? [selectedWallId] : [];
+    const instIds =
+      selectedInstanceIds.size > 0
+        ? Array.from(selectedInstanceIds)
+        : selectedKind === "module" && selectedInstanceId
+          ? [selectedInstanceId]
+          : [];
+    if (wallIds.length + instIds.length === 0) return false;
+
+    clearTransform();
+    transformState.kind = kind;
+    transformState.step = kind === "move" ? "pickBase" : "pickPivot";
+    transformState.selectedWallIds = wallIds;
+    transformState.selectedInstanceIds = instIds;
+
+    // Capture start state (includes non-selected walls/modules so we can restore cleanly during preview).
+    for (const w of walls) transformState.startWalls.set(w.id, JSON.parse(JSON.stringify(w.params)) as WallParams);
+    for (const inst of instances) transformState.startInstances.set(inst.id, { pos: inst.root.position.clone(), rotY: inst.root.rotation.y });
+
+    setUnderlayStatus(kind === "move" ? "Move (M): click base point..." : "Rotate (R): click pivot point...");
+    mountProps();
+    return true;
+  };
+
+  const restoreTransformStartState = () => {
+    for (const w of walls) {
+      const p = transformState.startWalls.get(w.id);
+      if (p) w.params = JSON.parse(JSON.stringify(p)) as WallParams;
+      rebuildWall(w);
+    }
+    rebuildWallPlanMesh();
+    for (const inst of instances) {
+      const s = transformState.startInstances.get(inst.id);
+      if (s) {
+        inst.root.position.copy(s.pos);
+        inst.root.rotation.y = s.rotY;
+      }
+    }
+  };
+
+  const translateWallsByAnchors = (dxMm: number, dzMm: number) => {
+    const anchors: Array<{ x: number; z: number }> = [];
+    for (const id of transformState.selectedWallIds) {
+      const p = transformState.startWalls.get(id);
+      if (!p) continue;
+      anchors.push({ x: p.aMm.x, z: p.aMm.z }, { x: p.bMm.x, z: p.bMm.z });
+    }
+    if (anchors.length === 0) return;
+
+    const matchAnchor = (p: { x: number; z: number }) => anchors.some((a) => mmDist(a, p) <= wallJoinTolMm);
+    const touched = new Set<string>();
+    for (const w of walls) {
+      if (pinnedWallIds.has(w.id)) continue;
+      let changed = false;
+      if (matchAnchor(w.params.aMm)) {
+        w.params.aMm = { x: w.params.aMm.x + dxMm, z: w.params.aMm.z + dzMm };
+        changed = true;
+      }
+      if (matchAnchor(w.params.bMm)) {
+        w.params.bMm = { x: w.params.bMm.x + dxMm, z: w.params.bMm.z + dzMm };
+        changed = true;
+      }
+      if (changed) touched.add(w.id);
+    }
+    for (const id of touched) {
+      const w = walls.find((x) => x.id === id) ?? null;
+      if (w) rebuildWall(w);
+    }
+    if (touched.size > 0) rebuildWallPlanMesh();
+  };
+
+  const applyMoveDelta = (delta: THREE.Vector3) => {
+    restoreTransformStartState();
+
+    const dxMm = Math.round(delta.x * 1000);
+    const dzMm = Math.round(delta.z * 1000);
+
+    if (dxMm !== 0 || dzMm !== 0) {
+      translateWallsByAnchors(dxMm, dzMm);
+    }
+
+    const ignore = new Set<string>(transformState.selectedInstanceIds);
+
+    // Move modules as a group (no module-to-module snapping here; target snapping comes from cursor snap).
+    let ok = true;
+    for (const id of transformState.selectedInstanceIds) {
+      const inst = findInstance(id);
+      const st = transformState.startInstances.get(id);
+      if (!inst || !st) continue;
+      const desired = st.pos.clone().add(delta);
+      const desiredInRoom = applyWallConstraints(inst, desired);
+      inst.root.position.copy(desiredInRoom);
+      autoOrientModuleToRoomWallIfSnapped(inst, ignore);
+    }
+    for (const id of transformState.selectedInstanceIds) {
+      const inst = findInstance(id);
+      if (!inst) continue;
+      const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
+      const overlaps = anyOverlapIgnoring(inst, ignore);
+      if (!inRoom || overlaps) {
+        ok = false;
+        break;
+      }
+    }
+
+    if (ok) {
+      transformState.lastValidDelta.copy(delta);
+      updateLayoutPanel();
+    } else {
+      restoreTransformStartState();
+      const d = transformState.lastValidDelta;
+      const dxMm2 = Math.round(d.x * 1000);
+      const dzMm2 = Math.round(d.z * 1000);
+      if (dxMm2 !== 0 || dzMm2 !== 0) translateWallsByAnchors(dxMm2, dzMm2);
+      for (const id of transformState.selectedInstanceIds) {
+        const inst = findInstance(id);
+        const st = transformState.startInstances.get(id);
+        if (!inst || !st) continue;
+        const desired = st.pos.clone().add(d);
+        inst.root.position.copy(applyWallConstraints(inst, desired));
+        autoOrientModuleToRoomWallIfSnapped(inst, ignore);
+      }
+      updateLayoutPanel();
+    }
+  };
+
+  const rotatePointAround = (p: THREE.Vector3, pivot: THREE.Vector3, ang: number) => {
+    const dx = p.x - pivot.x;
+    const dz = p.z - pivot.z;
+    const c = Math.cos(ang);
+    const s = Math.sin(ang);
+    return new THREE.Vector3(pivot.x + dx * c - dz * s, 0, pivot.z + dx * s + dz * c);
+  };
+
+  const rotateWallsByAnchors = (pivot: THREE.Vector3, ang: number) => {
+    const anchors: Array<{ old: { x: number; z: number }; next: { x: number; z: number } }> = [];
+    for (const id of transformState.selectedWallIds) {
+      const p = transformState.startWalls.get(id);
+      if (!p) continue;
+      const a = fromMmPoint(p.aMm);
+      const b = fromMmPoint(p.bMm);
+      const na = rotatePointAround(a, pivot, ang);
+      const nb = rotatePointAround(b, pivot, ang);
+      anchors.push(
+        { old: { x: p.aMm.x, z: p.aMm.z }, next: toMmPoint(na) },
+        { old: { x: p.bMm.x, z: p.bMm.z }, next: toMmPoint(nb) }
+      );
+    }
+    if (anchors.length === 0) return;
+
+    const mapEnd = (p: { x: number; z: number }) => {
+      for (const a of anchors) if (mmDist(a.old, p) <= wallJoinTolMm) return a.next;
+      return null;
+    };
+
+    const touched = new Set<string>();
+    for (const w of walls) {
+      if (pinnedWallIds.has(w.id)) continue;
+      const na = mapEnd(w.params.aMm);
+      const nb = mapEnd(w.params.bMm);
+      if (na) {
+        w.params.aMm = { x: na.x, z: na.z };
+        touched.add(w.id);
+      }
+      if (nb) {
+        w.params.bMm = { x: nb.x, z: nb.z };
+        touched.add(w.id);
+      }
+    }
+    for (const id of touched) {
+      const w = walls.find((x) => x.id === id) ?? null;
+      if (w) rebuildWall(w);
+    }
+    if (touched.size > 0) rebuildWallPlanMesh();
+  };
+
+  const applyRotateAngle = (ang: number) => {
+    const pivot = transformState.pivot;
+    if (!pivot) return;
+    restoreTransformStartState();
+
+    rotateWallsByAnchors(pivot, ang);
+
+    const ignore = new Set<string>(transformState.selectedInstanceIds);
+    let ok = true;
+
+    for (const id of transformState.selectedInstanceIds) {
+      const inst = findInstance(id);
+      const st = transformState.startInstances.get(id);
+      if (!inst || !st) continue;
+      const nextPos = rotatePointAround(st.pos, pivot, ang);
+      inst.root.rotation.y = st.rotY + ang;
+      inst.root.position.copy(applyWallConstraints(inst, nextPos));
+    }
+
+    for (const id of transformState.selectedInstanceIds) {
+      const inst = findInstance(id);
+      if (!inst) continue;
+      const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
+      const overlaps = anyOverlapIgnoring(inst, ignore);
+      if (!inRoom || overlaps) {
+        ok = false;
+        break;
+      }
+    }
+
+    if (ok) {
+      transformState.lastValidAngle = ang;
+      updateLayoutPanel();
+    } else {
+      // Keep last valid
+      restoreTransformStartState();
+      rotateWallsByAnchors(pivot, transformState.lastValidAngle);
+      for (const id of transformState.selectedInstanceIds) {
+        const inst = findInstance(id);
+        const st = transformState.startInstances.get(id);
+        if (!inst || !st) continue;
+        const nextPos = rotatePointAround(st.pos, pivot, transformState.lastValidAngle);
+        inst.root.rotation.y = st.rotY + transformState.lastValidAngle;
+        inst.root.position.copy(applyWallConstraints(inst, nextPos));
+      }
+      updateLayoutPanel();
+    }
   };
 
   type AlignWallLine = "center" | "exterior" | "interior" | "endA" | "endB";
@@ -2191,6 +2512,42 @@ export function startApp(args: AppArgs) {
         }
       }
 
+      if (transformState.kind) {
+        if (ev.key === "Escape") {
+          clearTransform({ restore: true, status: "Canceled." });
+          ev.preventDefault();
+          return;
+        }
+
+        if (transformState.kind === "rotate" && transformState.step === "rotating") {
+          const isDigit = ev.key.length === 1 && ev.key >= "0" && ev.key <= "9";
+          if (isDigit) {
+            transformState.typed = `${transformState.typed}${ev.key}`.slice(0, 6);
+            setUnderlayStatus(`Rotate: ${transformState.typed}° (Enter)`);
+            ev.preventDefault();
+            return;
+          }
+          if (ev.key === "Backspace") {
+            transformState.typed = transformState.typed.slice(0, -1);
+            setUnderlayStatus(transformState.typed.length ? `Rotate: ${transformState.typed}° (Enter)` : "Rotate: move mouse to set direction, or type degrees + Enter.");
+            ev.preventDefault();
+            return;
+          }
+          if (ev.key === "Enter" && transformState.typed.trim().length > 0) {
+            const n = Number(transformState.typed.trim().replace(",", "."));
+            if (Number.isFinite(n) && n !== 0) {
+              const sign = transformState.lastAngleSign || 1;
+              const ang = (Math.abs(n) * Math.PI) / 180 * sign;
+              applyRotateAngle(ang);
+              setUnderlayStatus(`Rotate: ${sign < 0 ? "CW" : "CCW"} ${Math.abs(Math.round(n))}° (click to finish)`);
+            }
+            transformState.typed = "";
+            ev.preventDefault();
+            return;
+          }
+        }
+      }
+
       const nudgeStepM = () => {
         if (viewMode !== "2d") return 0;
         const c = cam();
@@ -2283,6 +2640,7 @@ export function startApp(args: AppArgs) {
             if (anyOverlap(inst, null)) {
               inst.root.position.copy(prev);
             } else {
+              autoOrientModuleToRoomWallIfSnapped(inst);
               moved = true;
             }
           }
@@ -2312,6 +2670,20 @@ export function startApp(args: AppArgs) {
               return;
             }
           }
+        }
+      }
+
+      if ((ev.key === "m" || ev.key === "M") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        if (startTransformFromSelection("move")) {
+          ev.preventDefault();
+          return;
+        }
+      }
+
+      if ((ev.key === "r" || ev.key === "R") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        if (startTransformFromSelection("rotate")) {
+          ev.preventDefault();
+          return;
         }
       }
 
@@ -2534,6 +2906,15 @@ export function startApp(args: AppArgs) {
       if (ev.key === "Delete" || ev.key === "Backspace") {
         if (selectedKind === "dimension" && selectedDimensionId) {
           deleteDimension(selectedDimensionId);
+          ev.preventDefault();
+          return;
+        }
+        if (selectedInstanceIds.size > 0) {
+          const ids = Array.from(selectedInstanceIds);
+          for (const id of ids) deleteInstance(id);
+          setSelectedModule(null);
+          selectedInstanceIds.clear();
+          commitHistory();
           ev.preventDefault();
           return;
         }
@@ -3896,6 +4277,100 @@ export function startApp(args: AppArgs) {
     pos.className = "muted";
     pos.textContent = `Pos: ${Math.round(inst.root.position.x * 1000)}×${Math.round(inst.root.position.z * 1000)} mm`;
     s.appendChild(pos);
+
+    const rowHost = document.createElement("div");
+    rowHost.style.marginTop = "10px";
+    s.appendChild(rowHost);
+
+    const rot = document.createElement("input");
+    rot.type = "number";
+    rot.step = "1";
+    rot.value = String(Math.round((inst.root.rotation.y * 180) / Math.PI));
+    props.row(rowHost, "Rotation (deg)", rot);
+
+    const pinned = document.createElement("input");
+    pinned.type = "checkbox";
+    pinned.checked = pinnedInstanceIds.has(inst.id);
+    props.row(rowHost, "Pinned", pinned);
+
+    const applyRot = () => {
+      const n = Number(String(rot.value).trim().replace(",", "."));
+      if (!Number.isFinite(n)) return;
+      const deg = ((n % 360) + 360) % 360;
+      const next = (deg * Math.PI) / 180;
+      const prevRot = inst.root.rotation.y;
+      inst.root.rotation.y = next;
+      const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
+      const overlaps = anyOverlap(inst, null);
+      if (!inRoom || overlaps) {
+        inst.root.rotation.y = prevRot;
+        rot.value = String(Math.round((prevRot * 180) / Math.PI));
+        return;
+      }
+      commitHistory();
+      mountProps();
+    };
+
+    rot.addEventListener("change", applyRot);
+    rot.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") applyRot();
+    });
+
+    pinned.addEventListener("change", () => {
+      if (pinned.checked) pinnedInstanceIds.add(inst.id);
+      else pinnedInstanceIds.delete(inst.id);
+      commitHistory();
+      mountProps();
+    });
+
+    const editorHost = document.createElement("div");
+    editorHost.style.marginTop = "10px";
+    s.appendChild(editorHost);
+
+    const worktopArgs = { getWorktopThicknessMm: () => 0 };
+    const onChange = () => {
+      rebuildInstance(inst);
+      commitHistory();
+      mountProps();
+    };
+
+    if (inst.params.type === "drawer_low") {
+      createDrawerLowControls(editorHost, inst.params, { ...worktopArgs, onChange });
+      return;
+    }
+    if (inst.params.type === "nested_drawer_low") {
+      createNestedDrawerLowControls(editorHost, inst.params, { ...worktopArgs, onChange });
+      return;
+    }
+    if (inst.params.type === "fridge_tall") {
+      createFridgeTallControls(editorHost, inst.params, { onChange });
+      return;
+    }
+    if (inst.params.type === "flap_shelves_low") {
+      createFlapShelvesLowControls(editorHost, inst.params, { ...worktopArgs, onChange });
+      return;
+    }
+    if (inst.params.type === "swing_shelves_low") {
+      createSwingShelvesLowControls(editorHost, inst.params, { ...worktopArgs, onChange });
+      return;
+    }
+    if (inst.params.type === "oven_base_low") {
+      createOvenBaseLowControls(editorHost, inst.params, { ...worktopArgs, onChange });
+      return;
+    }
+    if (inst.params.type === "microwave_oven_tall") {
+      createMicrowaveOvenTallControls(editorHost, inst.params, { ...worktopArgs, onChange });
+      return;
+    }
+    if (inst.params.type === "top_drawers_doors_low") {
+      createTopDrawersDoorsLowControls(editorHost, inst.params, { ...worktopArgs, onChange });
+      return;
+    }
+    if (inst.params.type === "shelves") {
+      createShelvesControls(editorHost, inst.params, { onChange });
+      return;
+    }
+    createCornerShelfLowerControls(editorHost, inst.params, { onChange });
   };
 
   const setDimensionValueMm = (d: DimensionInstance, desiredMm: number) => {
@@ -4423,9 +4898,8 @@ export function startApp(args: AppArgs) {
   }
 
   function instanceWorldBox(inst: LayoutInstance) {
-    const box = inst.localBox.clone();
-    box.translate(inst.root.position);
-    return box;
+    inst.root.updateMatrixWorld(true);
+    return new THREE.Box3().setFromObject(inst.module);
   }
 
   function instanceWorldBoxAt(inst: LayoutInstance, pos: THREE.Vector3) {
@@ -4433,6 +4907,7 @@ export function startApp(args: AppArgs) {
     inst.root.position.copy(pos);
     const box = instanceWorldBox(inst);
     inst.root.position.copy(prev);
+    inst.root.updateMatrixWorld(true);
     return box;
   }
 
@@ -4470,8 +4945,14 @@ export function startApp(args: AppArgs) {
     inst.outline.position.set(0, 0, 0);
   }
 
-  function createInstance(nextParams: ModuleParams) {
-    const id = `m${instanceCounter++}`;
+  function createInstance(nextParams: ModuleParams, opts?: { id?: string }) {
+    const id = opts?.id ?? `m${instanceCounter++}`;
+    // Keep counter ahead of restored ids ("m123" => 124)
+    if (opts?.id) {
+      const m = /^m(\d+)$/.exec(id);
+      const n = m ? Number(m[1]) : NaN;
+      if (Number.isFinite(n) && n >= instanceCounter) instanceCounter = n + 1;
+    }
     const root = new THREE.Group();
     root.name = `module_${id}`;
 
@@ -5022,6 +5503,17 @@ export function startApp(args: AppArgs) {
     return false;
   }
 
+  function anyOverlapIgnoring(moving: LayoutInstance, ignoreIds: Set<string>) {
+    const a = instanceWorldBox(moving);
+    for (const other of instances) {
+      if (other.id === moving.id) continue;
+      if (ignoreIds.has(other.id)) continue;
+      const b = instanceWorldBox(other);
+      if (aabbOverlapXZ(a, b)) return true;
+    }
+    return false;
+  }
+
   function snapPosition(moving: LayoutInstance, desired: THREE.Vector3) {
     const snapDist = 0.03; // 30mm
     const minOverlap = 0.05; // 50mm
@@ -5142,6 +5634,40 @@ export function startApp(args: AppArgs) {
     if (Math.abs(dzF) <= snapDist) trySnap(new THREE.Vector3(0, 0, dzF));
 
     return next;
+  }
+
+  function autoOrientModuleToRoomWallIfSnapped(inst: LayoutInstance, ignoreIds?: Set<string>) {
+    const snapDist = 0.03; // 30mm
+    const box = instanceWorldBox(inst);
+    const dxL = -roomBounds.halfW - box.min.x;
+    const dxR = roomBounds.halfW - box.max.x;
+    const dzB = -roomBounds.halfD - box.min.z; // back (-Z)
+    const dzF = roomBounds.halfD - box.max.z; // front (+Z)
+
+    const candidates: Array<{ dist: number; rotY: number }> = [];
+    if (Math.abs(dxL) <= snapDist + 1e-6) candidates.push({ dist: Math.abs(dxL), rotY: Math.PI / 2 }); // back = -X
+    if (Math.abs(dxR) <= snapDist + 1e-6) candidates.push({ dist: Math.abs(dxR), rotY: -Math.PI / 2 }); // back = +X
+    if (Math.abs(dzB) <= snapDist + 1e-6) candidates.push({ dist: Math.abs(dzB), rotY: 0 }); // back = -Z
+    if (Math.abs(dzF) <= snapDist + 1e-6) candidates.push({ dist: Math.abs(dzF), rotY: Math.PI }); // back = +Z
+    if (candidates.length === 0) return;
+
+    candidates.sort((a, b) => a.dist - b.dist);
+    const targetRot = candidates[0].rotY;
+
+    const prevPos = inst.root.position.clone();
+    const prevRot = inst.root.rotation.y;
+
+    inst.root.rotation.y = targetRot;
+    inst.root.position.copy(applyWallConstraints(inst, inst.root.position.clone()));
+    const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
+    const overlaps = ignoreIds ? anyOverlapIgnoring(inst, ignoreIds) : anyOverlap(inst, null);
+    if (!inRoom || overlaps) {
+      inst.root.rotation.y = prevRot;
+      inst.root.position.copy(prevPos);
+      inst.root.updateMatrixWorld(true);
+      return;
+    }
+    inst.root.updateMatrixWorld(true);
   }
 
   function addInstance(type: ModuleParams["type"]) {
@@ -5764,7 +6290,7 @@ export function startApp(args: AppArgs) {
 
   renderer.domElement.addEventListener("pointerdown", (ev) => {
     // Marquee selection in 2D layout select tool (left button) - start pending, activate on drag.
-    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && ev.button === 0 && !measureState.enabled) {
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && !transformState.kind && ev.button === 0 && !measureState.enabled) {
       const rect = renderer.domElement.getBoundingClientRect();
       marquee.pending = true;
       marquee.active = false;
@@ -5848,6 +6374,50 @@ export function startApp(args: AppArgs) {
         underlayCal.active = false;
         underlayCal.first = null;
         return;
+      }
+
+      if (layoutTool === "select" && viewMode === "2d" && transformState.kind) {
+        if (ev.button !== 0) return;
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+        const snapped = snapPoint2D(hitPoint, rect, cam());
+        const p = snapped.kind !== "none" ? snapped.point : hitPoint;
+
+        if (transformState.kind === "move") {
+          if (transformState.step === "pickBase") {
+            transformState.base = p.clone();
+            transformState.step = "pickTarget";
+            transformState.lastValidDelta.set(0, 0, 0);
+            setUnderlayStatus("Move: click target point...");
+            return;
+          }
+          if (transformState.step === "pickTarget" && transformState.base) {
+            const delta = p.clone().sub(transformState.base);
+            applyMoveDelta(delta);
+            commitHistory();
+            clearTransform({ status: "Move: done." });
+            mountProps();
+            return;
+          }
+        }
+
+        if (transformState.kind === "rotate") {
+          if (transformState.step === "pickPivot") {
+            transformState.pivot = p.clone();
+            transformState.step = "rotating";
+            transformState.typed = "";
+            transformState.lastValidAngle = 0;
+            transformState.startPointerAngle = Math.atan2(hitPoint.z - p.z, hitPoint.x - p.x);
+            setUnderlayStatus("Rotate: move mouse to rotate (type degrees + Enter). Click to finish.");
+            return;
+          }
+          if (transformState.step === "rotating") {
+            commitHistory();
+            clearTransform({ status: "Rotate: done." });
+            mountProps();
+            return;
+          }
+        }
       }
 
       if (layoutTool === "align") {
@@ -6542,6 +7112,51 @@ export function startApp(args: AppArgs) {
       return;
     }
 
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && transformState.kind) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      transformState.lastPointerPx.x = ev.clientX - rect.left;
+      transformState.lastPointerPx.y = ev.clientY - rect.top;
+
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      pointerNdc.set(x, y);
+      raycaster.setFromCamera(pointerNdc, cam());
+      const hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+
+      const snapped = snapPoint2D(hitPoint, rect, cam());
+      const p = snapped.kind !== "none" ? snapped.point : hitPoint;
+      if (snapped.kind !== "none") {
+        const s = worldToScreen(p, cam(), rect);
+        wallSnapHud.style.left = `${s.x}px`;
+        wallSnapHud.style.top = `${s.y}px`;
+        wallSnapHud.style.display = "block";
+      } else {
+        wallSnapHud.style.display = "none";
+      }
+
+      if (transformState.kind === "move" && transformState.step === "pickTarget" && transformState.base) {
+        const delta = p.clone().sub(transformState.base);
+        applyMoveDelta(delta);
+        setUnderlayStatus(`Move: Δ ${Math.round(delta.x * 1000)}×${Math.round(delta.z * 1000)} mm (click to finish)`);
+        return;
+      }
+
+      if (transformState.kind === "rotate" && transformState.step === "rotating" && transformState.pivot) {
+        const pivot = transformState.pivot;
+        const a0 = transformState.startPointerAngle;
+        const a1 = Math.atan2(hitPoint.z - pivot.z, hitPoint.x - pivot.x);
+        let d = a1 - a0;
+        // normalize
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        transformState.lastAngleSign = d < 0 ? -1 : 1;
+        applyRotateAngle(d);
+        setUnderlayStatus(`Rotate: ${Math.round((d * 180) / Math.PI)}° (click to finish)`);
+        return;
+      }
+    }
+
     if (marquee.active) {
       const rect = renderer.domElement.getBoundingClientRect();
       const x = ev.clientX - rect.left;
@@ -6876,6 +7491,7 @@ export function startApp(args: AppArgs) {
       const finalPos = applyWallConstraints(inst, snapped);
 
       inst.root.position.copy(finalPos);
+      autoOrientModuleToRoomWallIfSnapped(inst);
       if (anyOverlap(inst, null)) {
         inst.root.position.copy(dragState.lastValid);
       } else {
