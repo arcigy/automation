@@ -69,7 +69,7 @@ export function startApp(args: AppArgs) {
   let mode: AppMode = "build";
   let viewMode: "3d" | "2d" = "3d";
 
-  type LayoutTool = "select" | "wall" | "align" | "trim";
+  type LayoutTool = "select" | "wall" | "align" | "trim" | "dimension";
   let layoutTool: LayoutTool = "select";
 
   type RenderMode = "realtime" | "realtime_ssgi" | "photo_pathtrace";
@@ -81,6 +81,8 @@ export function startApp(args: AppArgs) {
   let photoLastLightingRevision = -1;
   let lastCameraWorld = new Float32Array(16);
   let lastCameraProj = new Float32Array(16);
+  let lastDimZoom = -1;
+  let lastDimRectW = -1;
 
   const copyM16 = (out: Float32Array, m: THREE.Matrix4) => {
     const e = m.elements;
@@ -150,6 +152,7 @@ export function startApp(args: AppArgs) {
     hudHoverLine.visible = false;
     hudPickLine1.visible = false;
     hudPickLine2.visible = false;
+    dimPreview.root.visible = false;
   };
 
   const hudLineThicknessM = (rect: DOMRect) => {
@@ -469,8 +472,9 @@ export function startApp(args: AppArgs) {
   };
 
   let windowInst: WindowInstance | null = null;
-  type SelectedKind = "module" | "window" | "wall" | "underlay" | null;
+  type SelectedKind = "module" | "window" | "wall" | "underlay" | "dimension" | null;
   let selectedKind: SelectedKind = null;
+  let selectedDimensionId: string | null = null;
 
   type WallParams = {
     thicknessMm: number;
@@ -500,9 +504,262 @@ export function startApp(args: AppArgs) {
     exteriorSign: 1 as 1 | -1
   };
 
+  type DimensionRef = {
+    wallId: string;
+    wallLine: AlignWallLine;
+    t: number; // 0..1 along picked segment
+  };
+
+  type DimensionParams = {
+    id: string;
+    a: DimensionRef;
+    b: DimensionRef;
+    offsetM: number; // signed along normal from line A to dimension line
+  };
+
+  type DimensionInstance = {
+    id: string;
+    params: DimensionParams;
+    root: THREE.Group;
+    pick: THREE.Mesh;
+    ext1: THREE.Line;
+    ext2: THREE.Line;
+    dim: THREE.Line;
+    tick1: THREE.Line;
+    tick2: THREE.Line;
+    text: THREE.Sprite;
+  };
+
+  const dimensions: DimensionInstance[] = [];
+  let dimensionCounter = 1;
+
+  const dimMat = new THREE.LineBasicMaterial({ color: 0x5c8cff, transparent: true, opacity: 0.95, depthTest: false });
+  const dimMatSelected = new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 1, depthTest: false });
+  const dimPickMat = new THREE.MeshBasicMaterial({ visible: false });
+
+  const makeTextSprite = (text: string) => {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas 2D not available");
+    const pad = 10;
+    const fontPx = 28;
+    ctx.font = `${fontPx}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+    const metrics = ctx.measureText(text);
+    const w = Math.ceil(metrics.width + pad * 2);
+    const h = Math.ceil(fontPx + pad * 2);
+    canvas.width = w;
+    canvas.height = h;
+
+    // redraw
+    const ctx2 = canvas.getContext("2d")!;
+    ctx2.font = `${fontPx}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+    ctx2.textBaseline = "middle";
+    ctx2.textAlign = "center";
+    ctx2.fillStyle = "rgba(10, 14, 20, 0.85)";
+    const r = 10;
+    ctx2.beginPath();
+    ctx2.moveTo(r, 0);
+    ctx2.lineTo(w - r, 0);
+    ctx2.quadraticCurveTo(w, 0, w, r);
+    ctx2.lineTo(w, h - r);
+    ctx2.quadraticCurveTo(w, h, w - r, h);
+    ctx2.lineTo(r, h);
+    ctx2.quadraticCurveTo(0, h, 0, h - r);
+    ctx2.lineTo(0, r);
+    ctx2.quadraticCurveTo(0, 0, r, 0);
+    ctx2.closePath();
+    ctx2.fill();
+    ctx2.strokeStyle = "rgba(92, 140, 255, 0.9)";
+    ctx2.lineWidth = 2;
+    ctx2.stroke();
+    ctx2.fillStyle = "rgba(255,255,255,0.96)";
+    ctx2.fillText(text, w / 2, h / 2 + 1);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false });
+    const spr = new THREE.Sprite(mat);
+    spr.renderOrder = 90;
+    spr.position.y = 0.055;
+    return spr;
+  };
+
+  const updateSpriteText = (spr: THREE.Sprite, text: string) => {
+    if ((spr.userData as any).text === text) return;
+    (spr.userData as any).text = text;
+    const mat = spr.material as THREE.SpriteMaterial;
+    const old = mat.map as THREE.Texture | null;
+    const next = makeTextSprite(text);
+    const nextMat = next.material as THREE.SpriteMaterial;
+    mat.map = nextMat.map;
+    mat.needsUpdate = true;
+    nextMat.dispose();
+    if (old) old.dispose();
+  };
+
+  const wallLineSegment = (wallId: string, wallLine: AlignWallLine) => {
+    const w = walls.find((x) => x.id === wallId) ?? null;
+    if (!w) return null as null | { a: THREE.Vector3; b: THREE.Vector3; dir: THREE.Vector3 };
+    const refA = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+    const refB = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+    const just = w.params.justification ?? "center";
+    const s = (w.params.exteriorSign ?? 1) as 1 | -1;
+    const center = wallRefLineToCenterLine(refA, refB, w.params.thicknessMm, just, s);
+    const d = center.b.clone().sub(center.a);
+    if (d.lengthSq() < 1e-10) return null;
+    d.normalize();
+    const n = new THREE.Vector3(-d.z, 0, d.x);
+    const half = Math.max(10, w.params.thicknessMm) / 2000;
+    const exteriorA = center.a.clone().addScaledVector(n, s * half);
+    const exteriorB = center.b.clone().addScaledVector(n, s * half);
+    const interiorA = center.a.clone().addScaledVector(n, -s * half);
+    const interiorB = center.b.clone().addScaledVector(n, -s * half);
+
+    if (wallLine === "center") return { a: center.a, b: center.b, dir: d.clone() };
+    if (wallLine === "exterior") return { a: exteriorA, b: exteriorB, dir: d.clone() };
+    if (wallLine === "interior") return { a: interiorA, b: interiorB, dir: d.clone() };
+
+    const endLen = Math.max(0.5, w.params.thicknessMm / 1000 + 0.25);
+    if (wallLine === "endA") return { a: center.a.clone().addScaledVector(n, -endLen / 2), b: center.a.clone().addScaledVector(n, endLen / 2), dir: n.clone().normalize() };
+    if (wallLine === "endB") return { a: center.b.clone().addScaledVector(n, -endLen / 2), b: center.b.clone().addScaledVector(n, endLen / 2), dir: n.clone().normalize() };
+    return null;
+  };
+
+  const dimValueMm = (p: DimensionParams) => {
+    const la = wallLineSegment(p.a.wallId, p.a.wallLine);
+    const lb = wallLineSegment(p.b.wallId, p.b.wallLine);
+    if (!la || !lb) return null as null | { absMm: number; signedM: number; n: THREE.Vector3; aPt: THREE.Vector3; bPt: THREE.Vector3 };
+    const aPt = la.a.clone().lerp(la.b, Math.max(0, Math.min(1, p.a.t)));
+    const bPt = lb.a.clone().lerp(lb.b, Math.max(0, Math.min(1, p.b.t)));
+    const dir = la.dir.clone().normalize();
+    const n = new THREE.Vector3(-dir.z, 0, dir.x);
+    const signedM = n.dot(bPt.clone().sub(aPt));
+    return { absMm: Math.round(Math.abs(signedM) * 1000), signedM, n, aPt, bPt };
+  };
+
+  const updateDimensionGeometry = (d: DimensionInstance, rect: DOMRect | null = null) => {
+    const la = wallLineSegment(d.params.a.wallId, d.params.a.wallLine);
+    const lb = wallLineSegment(d.params.b.wallId, d.params.b.wallLine);
+    if (!la || !lb) {
+      d.root.visible = false;
+      return;
+    }
+
+    const aPt = la.a.clone().lerp(la.b, Math.max(0, Math.min(1, d.params.a.t)));
+    const bPt = lb.a.clone().lerp(lb.b, Math.max(0, Math.min(1, d.params.b.t)));
+    const dir = la.dir.clone().normalize();
+    const n = new THREE.Vector3(-dir.z, 0, dir.x);
+
+    const off = d.params.offsetM;
+    const aDim = aPt.clone().addScaledVector(n, off);
+    const bDim = bPt.clone().addScaledVector(n, off);
+
+    const setLinePts = (line: THREE.Line, pts: THREE.Vector3[]) => {
+      const g = new THREE.BufferGeometry().setFromPoints(pts);
+      line.geometry.dispose();
+      line.geometry = g;
+    };
+
+    setLinePts(d.ext1, [aPt.clone().setY(0.05), aDim.clone().setY(0.05)]);
+    setLinePts(d.ext2, [bPt.clone().setY(0.05), bDim.clone().setY(0.05)]);
+    setLinePts(d.dim, [aDim.clone().setY(0.05), bDim.clone().setY(0.05)]);
+
+    const dimDir = bDim.clone().sub(aDim);
+    const len = dimDir.length();
+    const tick = Math.min(0.12, Math.max(0.03, (rect ? hudLineThicknessM(rect) : 0.02) * 10));
+    const dimN = len > 1e-6 ? new THREE.Vector3(-dimDir.z, 0, dimDir.x).normalize() : new THREE.Vector3(0, 0, 1);
+    const t1a = aDim.clone().addScaledVector(dimN, tick / 2);
+    const t1b = aDim.clone().addScaledVector(dimN, -tick / 2);
+    const t2a = bDim.clone().addScaledVector(dimN, tick / 2);
+    const t2b = bDim.clone().addScaledVector(dimN, -tick / 2);
+    setLinePts(d.tick1, [t1a.clone().setY(0.05), t1b.clone().setY(0.05)]);
+    setLinePts(d.tick2, [t2a.clone().setY(0.05), t2b.clone().setY(0.05)]);
+
+    const mid = aDim.clone().add(bDim).multiplyScalar(0.5);
+    d.text.position.set(mid.x, 0.06, mid.z);
+    const mm = Math.round(Math.abs(n.dot(bPt.clone().sub(aPt))) * 1000);
+    updateSpriteText(d.text, `${mm} mm`);
+
+    // keep text readable: scale based on zoom (ortho)
+    if (rect) {
+      const thick = hudLineThicknessM(rect);
+      d.text.scale.set(thick * 40, thick * 20, 1);
+    } else {
+      d.text.scale.set(0.4, 0.2, 1);
+    }
+
+    // pick mesh follows dimension line
+    const angle = Math.atan2(bDim.z - aDim.z, bDim.x - aDim.x);
+    const pickLen = Math.max(0.01, aDim.distanceTo(bDim));
+    const pickThick = Math.max(0.05, rect ? hudLineThicknessM(rect) * 10 : 0.08);
+    d.pick.geometry.dispose();
+    d.pick.geometry = new THREE.BoxGeometry(pickLen, 0.04, pickThick);
+    d.pick.position.set(mid.x, 0.05, mid.z);
+    d.pick.rotation.set(0, angle, 0);
+
+    d.root.visible = viewMode === "2d";
+  };
+
+  const updateAllDimensions = (rect: DOMRect | null = null) => {
+    for (const d of dimensions) updateDimensionGeometry(d, rect);
+    updateDimensionSelectionHighlights();
+  };
+
+  const updateDimensionSelectionHighlights = () => {
+    for (const d of dimensions) {
+      const sel = selectedKind === "dimension" && selectedDimensionId === d.id;
+      const mat = sel ? dimMatSelected : dimMat;
+      d.ext1.material = mat;
+      d.ext2.material = mat;
+      d.dim.material = mat;
+      d.tick1.material = mat;
+      d.tick2.material = mat;
+    }
+  };
+
+  const createDimension = (a: DimensionRef, b: DimensionRef, offsetM: number, opts?: { id?: string; skipHistory?: boolean }) => {
+    const id = opts?.id ?? `d${dimensionCounter++}`;
+    const root = new THREE.Group();
+    root.name = `dimension_${id}`;
+
+    const mkLine = () => new THREE.Line(new THREE.BufferGeometry(), dimMat);
+    const ext1 = mkLine();
+    const ext2 = mkLine();
+    const dim = mkLine();
+    const tick1 = mkLine();
+    const tick2 = mkLine();
+    const text = makeTextSprite("0 mm");
+
+    const pick = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.04, 0.08), dimPickMat);
+    pick.userData.kind = "dimension";
+    pick.userData.dimensionId = id;
+    root.add(pick, ext1, ext2, dim, tick1, tick2, text);
+
+    const inst: DimensionInstance = { id, params: { id, a, b, offsetM }, root, pick, ext1, ext2, dim, tick1, tick2, text };
+    layoutRoot.add(root);
+    dimensions.push(inst);
+    updateDimensionGeometry(inst);
+    if (!opts?.skipHistory) commitHistory();
+    return inst;
+  };
+
+  const deleteDimension = (id: string, opts?: { skipHistory?: boolean }) => {
+    const idx = dimensions.findIndex((x) => x.id === id);
+    if (idx < 0) return;
+    const d = dimensions[idx];
+    dimensions.splice(idx, 1);
+    layoutRoot.remove(d.root);
+    disposeObject3D(d.root);
+    if (selectedDimensionId === id) setSelectedDimension(null);
+    if (!opts?.skipHistory) commitHistory();
+  };
+
   type LayoutSnapshot = {
     wallCounter: number;
     walls: Array<{ id: string; params: WallParams }>;
+    dimensionCounter: number;
+    dimensions: DimensionParams[];
     pinnedWallIds: string[];
     pinnedInstanceIds: string[];
     underlayPinned: boolean;
@@ -512,6 +769,7 @@ export function startApp(args: AppArgs) {
       wallIds: string[];
       instId: string | null;
       instIds: string[];
+      dimensionId: string | null;
     };
   };
 
@@ -527,8 +785,11 @@ export function startApp(args: AppArgs) {
     const w = s.walls
       .map((x) => `${x.id}:${x.params.aMm.x},${x.params.aMm.z}-${x.params.bMm.x},${x.params.bMm.z}:${x.params.thicknessMm}:${(x.params as any).justification ?? "center"}:${x.params.exteriorSign ?? 1}`)
       .join("|");
+    const dims = (s.dimensions ?? [])
+      .map((d) => `${d.id}:${d.a.wallId}:${d.a.wallLine}:${Math.round(d.a.t * 1000)}-${d.b.wallId}:${d.b.wallLine}:${Math.round(d.b.t * 1000)}:${Math.round(d.offsetM * 1000)}`)
+      .join("|");
     const pins = `${s.pinnedWallIds.slice().sort().join(",")}#${s.pinnedInstanceIds.slice().sort().join(",")}#${s.underlayPinned ? 1 : 0}`;
-    return `${s.wallCounter}::${pins}::${w}`;
+    return `${s.wallCounter}:${s.dimensionCounter}::${pins}::${w}::${dims}`;
   };
 
   let undoBtnEl: HTMLButtonElement | null = null;
@@ -543,6 +804,8 @@ export function startApp(args: AppArgs) {
     return {
       wallCounter,
       walls: walls.map((w) => ({ id: w.id, params: copyParams(w.params) })),
+      dimensionCounter,
+      dimensions: dimensions.map((d) => JSON.parse(JSON.stringify(d.params)) as DimensionParams),
       pinnedWallIds: Array.from(pinnedWallIds),
       pinnedInstanceIds: Array.from(pinnedInstanceIds),
       underlayPinned: !!underlayState?.pinned,
@@ -551,7 +814,8 @@ export function startApp(args: AppArgs) {
         wallId: selectedWallId,
         wallIds: Array.from(selectedWallIds),
         instId: selectedInstanceId,
-        instIds: Array.from(selectedInstanceIds)
+        instIds: Array.from(selectedInstanceIds),
+        dimensionId: selectedDimensionId
       }
     };
   };
@@ -560,9 +824,16 @@ export function startApp(args: AppArgs) {
     // Clear selection visuals first
     setSelectedWall(null);
     setSelectedModule(null);
+    setSelectedDimension(null);
     selectedWallIds.clear();
     selectedInstanceIds.clear();
     updateSelectionHighlights();
+
+    // Clear dimensions
+    for (const d of dimensions.splice(0, dimensions.length)) {
+      layoutRoot.remove(d.root);
+      disposeObject3D(d.root);
+    }
 
     // Clear wall roots
     for (const w of walls.splice(0, walls.length)) {
@@ -571,6 +842,7 @@ export function startApp(args: AppArgs) {
     }
 
     wallCounter = snap.wallCounter;
+    dimensionCounter = snap.dimensionCounter ?? dimensionCounter;
 
     pinnedWallIds.clear();
     for (const id of snap.pinnedWallIds) pinnedWallIds.add(id);
@@ -595,7 +867,14 @@ export function startApp(args: AppArgs) {
       rebuildWall(inst);
     }
 
+    if (snap.dimensions && snap.dimensions.length > 0) {
+      for (const dp of snap.dimensions) {
+        createDimension(dp.a, dp.b, dp.offsetM, { id: dp.id, skipHistory: true });
+      }
+    }
+
     rebuildWallPlanMesh();
+    updateAllDimensions();
     clearToolHud();
 
     // Restore selection (best-effort)
@@ -605,11 +884,14 @@ export function startApp(args: AppArgs) {
       setSelectedWall(snap.selected.wallId);
     } else if (snap.selected.kind === "module" && snap.selected.instId) {
       setSelectedModule(snap.selected.instId);
+    } else if (snap.selected.kind === "dimension" && snap.selected.dimensionId) {
+      setSelectedDimension(snap.selected.dimensionId);
     } else {
       setSelectedWall(null);
       setSelectedModule(null);
     }
     updateSelectionHighlights();
+    updateDimensionSelectionHighlights();
     mountProps();
   };
 
@@ -693,6 +975,35 @@ export function startApp(args: AppArgs) {
     lastTarget: null as AlignPickedLine | null,
     lastCutter: null as AlignPickedLine | null,
     lastUntilMs: 0
+  };
+
+  const dimTool = {
+    a: null as AlignPickedLine | null,
+    tA: 0.5,
+    hover: null as AlignPickedLine | null,
+    offsetM: 0.2
+  };
+
+  const dimPreview = {
+    root: new THREE.Group(),
+    ext1: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
+    ext2: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
+    dim: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
+    tick1: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
+    tick2: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
+    text: makeTextSprite("... mm")
+  };
+  dimPreview.root.name = "dimPreview";
+  dimPreview.root.visible = false;
+  dimPreview.root.add(dimPreview.ext1, dimPreview.ext2, dimPreview.dim, dimPreview.tick1, dimPreview.tick2, dimPreview.text);
+  toolHud.add(dimPreview.root);
+
+  const segClosestT = (p: THREE.Vector3, a: THREE.Vector3, b: THREE.Vector3) => {
+    const ab = b.clone().sub(a);
+    const denom = ab.lengthSq();
+    if (denom < 1e-10) return 0.5;
+    const t = p.clone().sub(a).dot(ab) / denom;
+    return Math.max(0, Math.min(1, t));
   };
 
   const distPxPointToSeg = (px: number, py: number, ax: number, ay: number, bx: number, by: number) => {
@@ -953,6 +1264,9 @@ export function startApp(args: AppArgs) {
   }
 
   function removeWall(w: WallInstance) {
+    // Remove dependent dimensions
+    const dimIds = dimensions.filter((d) => d.params.a.wallId === w.id || d.params.b.wallId === w.id).map((d) => d.id);
+    for (const id of dimIds) deleteDimension(id, { skipHistory: true });
     layoutRoot.remove(w.root);
     w.mesh.geometry.dispose();
     (w.mesh.material as THREE.Material).dispose();
@@ -1413,6 +1727,8 @@ export function startApp(args: AppArgs) {
         wallDebugGroup.add(p);
       }
     }
+
+    updateAllDimensions();
   }
 
   function createWallMesh(a: THREE.Vector3, b: THREE.Vector3, thicknessMm: number) {
@@ -1629,6 +1945,14 @@ export function startApp(args: AppArgs) {
     startOffsetMm: { x: 0, z: 0 }
   };
 
+  const dimensionDragState = {
+    active: false,
+    id: null as string | null,
+    pointerId: null as number | null,
+    startWorld: new THREE.Vector3(),
+    startOffsetM: 0
+  };
+
   const windowDragState = {
     active: false,
     wall: null as WallId | null,
@@ -1763,6 +2087,39 @@ export function startApp(args: AppArgs) {
       view2d.checked = true;
     }
     setUnderlayStatus("Trim: click target wall...");
+    mountProps();
+  };
+
+  const setToolDimension = () => {
+    ensureLayoutMode();
+    layoutTool = "dimension";
+    clearToolHud();
+    wallDraw.active = false;
+    wallDraw.a = null;
+    wallDraw.chainStart = null;
+    wallDraw.segments = 0;
+    wallDraw.hoverB = null;
+    wallDraw.typedMm = "";
+    wallTypedHud.style.display = "none";
+    wallSnapHud.style.display = "none";
+    if (wallDraw.preview) {
+      layoutRoot.remove(wallDraw.preview);
+      wallDraw.preview.geometry.dispose();
+      (wallDraw.preview.material as THREE.Material).dispose();
+      wallDraw.preview = null;
+    }
+    dimTool.a = null;
+    dimTool.tA = 0.5;
+    dimTool.hover = null;
+    dimTool.offsetM = 0.2;
+    dimPreview.root.visible = false;
+    if (viewMode !== "2d") {
+      view2d.checked = true;
+      setView2d(true);
+    } else {
+      view2d.checked = true;
+    }
+    setUnderlayStatus("Dimension: click first line...");
     mountProps();
   };
 
@@ -1924,6 +2281,11 @@ export function startApp(args: AppArgs) {
         ev.preventDefault();
         return;
       }
+      if ((ev.key === "d" || ev.key === "D") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        setToolDimension();
+        ev.preventDefault();
+        return;
+      }
       if (ev.key === " " || ev.code === "Space") {
         // Mirror wall side (Revit-like): works while drawing + when wall is selected.
         if (layoutTool === "wall") {
@@ -1985,6 +2347,18 @@ export function startApp(args: AppArgs) {
           clearToolHud();
           setUnderlayStatus("Trim: click target wall...");
           mountProps();
+        } else {
+          setToolSelect();
+        }
+        ev.preventDefault();
+        return;
+      }
+
+      if (ev.key === "Escape" && layoutTool === "dimension") {
+        if (dimTool.a) {
+          dimTool.a = null;
+          dimPreview.root.visible = false;
+          setUnderlayStatus("Dimension: canceled. Click first line...");
         } else {
           setToolSelect();
         }
@@ -2109,6 +2483,11 @@ export function startApp(args: AppArgs) {
       }
 
       if (ev.key === "Delete" || ev.key === "Backspace") {
+        if (selectedKind === "dimension" && selectedDimensionId) {
+          deleteDimension(selectedDimensionId);
+          ev.preventDefault();
+          return;
+        }
         if (selectedWallIds.size > 0) {
           const ids = Array.from(selectedWallIds);
           for (const id of ids) deleteWall(id);
@@ -3216,6 +3595,7 @@ export function startApp(args: AppArgs) {
   const I_DEBUG = icon("M4 12h16v2H4v-2zm7-8h2v16h-2V4z");
   const I_ALIGN = icon("M4 7h12v2H4V7zm0 8h12v2H4v-2zM18 6l4 3-4 3V6zm0 6l4 3-4 3v-6z");
   const I_TRIM = icon("M4 7h11v2H4V7zm0 8h8v2H4v-2zM18 5l4 4-2 2-4-4 2-2zm-4 4l4 4-2 2-4-4 2-2z");
+  const I_DIM = icon("M3 7h18v2H3V7zm0 8h18v2H3v-2zM6 9v6H4V9h2zm16 0v6h-2V9h2z");
   const I_UNDO = icon("M12 5H7.8l1.6-1.6L8 2 4 6l4 4 1.4-1.4L7.8 7H12c3.3 0 6 2.7 6 6 0 1.1-.3 2.1-.8 3l1.7 1c.7-1.2 1.1-2.6 1.1-4 0-4.4-3.6-8-8-8z");
   const I_REDO = icon("M12 5c-4.4 0-8 3.6-8 8 0 1.4.4 2.8 1.1 4l1.7-1c-.5-.9-.8-1.9-.8-3 0-3.3 2.7-6 6-6h4.2l-1.6 1.6L16 10l4-4-4-4-1.4 1.4L16.2 5H12z");
 
@@ -3351,6 +3731,20 @@ export function startApp(args: AppArgs) {
     s.appendChild(cur);
   };
 
+  const mountDimensionToolProps = () => {
+    props.setTitle("Dimension");
+    const s = props.section();
+    const hint = document.createElement("div");
+    hint.className = "muted";
+    hint.textContent = "Klikni 1. líniu, potom 2. rovnobežnú líniu. Kóta sa preview-uje podľa kurzora, zostane v scéne, dá sa posúvať a mazať.";
+    s.appendChild(hint);
+    const cur = document.createElement("div");
+    cur.className = "muted";
+    cur.style.marginTop = "8px";
+    cur.textContent = dimTool.a ? `First: ${dimTool.a.label}` : "First: (none)";
+    s.appendChild(cur);
+  };
+
   const mountWallProps = (w: WallInstance) => {
     props.setTitle(`Wall (${w.id})`);
     const s = props.section();
@@ -3420,6 +3814,79 @@ export function startApp(args: AppArgs) {
     s.appendChild(pos);
   };
 
+  const setDimensionValueMm = (d: DimensionInstance, desiredMm: number) => {
+    const v = dimValueMm(d.params);
+    if (!v) {
+      setUnderlayStatus("Dimension: invalid refs.");
+      return;
+    }
+    const desiredM = Math.max(1, desiredMm) / 1000;
+    const curM = Math.abs(v.signedM);
+    const deltaM = desiredM - curM;
+    if (Math.abs(deltaM) < 1e-6) return;
+
+    const dirInc = v.signedM >= 0 ? v.n.clone() : v.n.clone().multiplyScalar(-1);
+    const moveB = !pinnedWallIds.has(d.params.b.wallId);
+    const moveA = !pinnedWallIds.has(d.params.a.wallId);
+    if (!moveB && !moveA) {
+      setUnderlayStatus("Dimension: both walls are pinned.");
+      return;
+    }
+
+    if (moveB) {
+      const wb = walls.find((x) => x.id === d.params.b.wallId) ?? null;
+      if (!wb) {
+        setUnderlayStatus("Dimension: target wall missing.");
+        return;
+      }
+      const shift = dirInc.clone().multiplyScalar(deltaM);
+      translateWallAndConnected(wb, Math.round(shift.x * 1000), Math.round(shift.z * 1000));
+    } else {
+      const wa = walls.find((x) => x.id === d.params.a.wallId) ?? null;
+      if (!wa) {
+        setUnderlayStatus("Dimension: target wall missing.");
+        return;
+      }
+      const shift = dirInc.clone().multiplyScalar(-deltaM);
+      translateWallAndConnected(wa, Math.round(shift.x * 1000), Math.round(shift.z * 1000));
+    }
+
+    commitHistory();
+    setUnderlayStatus("Dimension: updated.");
+    mountProps();
+  };
+
+  const mountDimensionProps = (id: string) => {
+    const d = dimensions.find((x) => x.id === id) ?? null;
+    if (!d) return showNoProps();
+    props.setTitle(`Dimension (${d.id})`);
+    const s = props.section();
+    const v = dimValueMm(d.params);
+    const curMm = v?.absMm ?? 0;
+
+    const inp = document.createElement("input");
+    inp.type = "number";
+    inp.step = "1";
+    inp.value = String(curMm);
+    props.row(s, "Value (mm)", inp);
+
+    const hint = document.createElement("div");
+    hint.className = "muted";
+    hint.style.marginTop = "8px";
+    hint.textContent = "Enter/blur = apply (posunie jednu stenu). Drag kótu = zmena odsadenia.";
+    s.appendChild(hint);
+
+    const apply = () => {
+      const n = Number(String(inp.value).trim().replace(",", "."));
+      if (!n || !Number.isFinite(n) || n <= 0) return;
+      setDimensionValueMm(d, Math.round(n));
+    };
+    inp.addEventListener("change", apply);
+    inp.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") apply();
+    });
+  };
+
   const mountWindowProps = () => {
     props.setTitle("Window");
     const s = props.section();
@@ -3434,6 +3901,7 @@ export function startApp(args: AppArgs) {
     if (layoutTool === "wall") return mountWallToolProps();
     if (layoutTool === "align") return mountAlignToolProps();
     if (layoutTool === "trim") return mountTrimToolProps();
+    if (layoutTool === "dimension") return mountDimensionToolProps();
     if (selectedWallIds.size + selectedInstanceIds.size > 1) {
       args.propertiesEl.innerHTML = "";
       const t = document.createElement("div");
@@ -3454,6 +3922,7 @@ export function startApp(args: AppArgs) {
     }
     if (selectedKind === "window") return mountWindowProps();
     if (selectedKind === "module" && selectedInstanceId) return mountModuleProps(selectedInstanceId);
+    if (selectedKind === "dimension" && selectedDimensionId) return mountDimensionProps(selectedDimensionId);
     showNoProps();
   };
 
@@ -3513,6 +3982,13 @@ export function startApp(args: AppArgs) {
     iconSvg: I_TRIM,
     onClick: () => {
       setToolTrim();
+    }
+  });
+  tb.toolButton(gEdit, {
+    title: "Dimension (D)",
+    iconSvg: I_DIM,
+    onClick: () => {
+      setToolDimension();
     }
   });
 
@@ -3972,6 +4448,7 @@ export function startApp(args: AppArgs) {
       if (id) selectedInstanceIds.add(id);
       selectedWallId = null;
       selectedWallIds.clear();
+      selectedDimensionId = null;
       setInstanceSelected(id);
       if (selectedUnderlayBox) {
         scene.remove(selectedUnderlayBox);
@@ -3980,6 +4457,7 @@ export function startApp(args: AppArgs) {
         selectedUnderlayBox = null;
       }
       updateSelectionHighlights();
+      updateDimensionSelectionHighlights();
       mountProps();
     }
 
@@ -3987,6 +4465,7 @@ export function startApp(args: AppArgs) {
     if (layoutTool !== "wall") layoutTool = "select";
     selectedKind = "window";
     selectedWallId = null;
+    selectedDimensionId = null;
     setInstanceSelected(null);
     if (selectedUnderlayBox) {
       scene.remove(selectedUnderlayBox);
@@ -3994,6 +4473,7 @@ export function startApp(args: AppArgs) {
       (selectedUnderlayBox.material as THREE.Material).dispose();
       selectedUnderlayBox = null;
     }
+    updateDimensionSelectionHighlights();
     mountProps();
   }
 
@@ -4005,6 +4485,7 @@ export function startApp(args: AppArgs) {
     selectedWallIds.clear();
     selectedInstanceId = null;
     selectedInstanceIds.clear();
+    selectedDimensionId = null;
     setInstanceSelected(null);
     if (selectedWallBox) {
       scene.remove(selectedWallBox);
@@ -4024,6 +4505,33 @@ export function startApp(args: AppArgs) {
     mountProps();
   }
 
+  function setSelectedDimension(id: string | null) {
+    if (layoutTool !== "wall") layoutTool = "select";
+    selectedKind = id ? "dimension" : null;
+    selectedDimensionId = id;
+    selectedWallId = null;
+    selectedWallIds.clear();
+    selectedInstanceId = null;
+    selectedInstanceIds.clear();
+    setInstanceSelected(null);
+    if (selectedWallBox) {
+      scene.remove(selectedWallBox);
+      selectedWallBox.geometry.dispose();
+      (selectedWallBox.material as THREE.Material).dispose();
+      selectedWallBox = null;
+    }
+    if (selectedUnderlayBox) {
+      scene.remove(selectedUnderlayBox);
+      selectedUnderlayBox.geometry.dispose();
+      (selectedUnderlayBox.material as THREE.Material).dispose();
+      selectedUnderlayBox = null;
+    }
+    showWallSnapMarkersFor(null);
+    updateSelectionHighlights();
+    updateDimensionSelectionHighlights();
+    mountProps();
+  }
+
   function setSelectedWall(id: string | null) {
     if (layoutTool !== "wall") layoutTool = "select";
     if (id && pinnedWallIds.has(id)) id = null;
@@ -4033,6 +4541,7 @@ export function startApp(args: AppArgs) {
     if (id) selectedWallIds.add(id);
     setInstanceSelected(null);
     selectedInstanceIds.clear();
+    selectedDimensionId = null;
     if (selectedUnderlayBox) {
       scene.remove(selectedUnderlayBox);
       selectedUnderlayBox.geometry.dispose();
@@ -4060,6 +4569,7 @@ export function startApp(args: AppArgs) {
     scene.add(selectedWallBox);
     showWallSnapMarkersFor(id);
     updateSelectionHighlights();
+    updateDimensionSelectionHighlights();
     mountProps();
   }
 
@@ -4557,6 +5067,7 @@ export function startApp(args: AppArgs) {
       } else {
         for (const w of walls) w.mesh.visible = true;
       }
+      updateAllDimensions(renderer.domElement.getBoundingClientRect());
     }
 
   function setMode(next: AppMode) {
@@ -5001,6 +5512,29 @@ export function startApp(args: AppArgs) {
     }
   });
 
+  // Quick edit dimension value (double click)
+  renderer.domElement.addEventListener("dblclick", (ev) => {
+    if (mode !== "layout" || viewMode !== "2d") return;
+    const rect = renderer.domElement.getBoundingClientRect();
+    const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+    pointerNdc.set(x, y);
+    raycaster.setFromCamera(pointerNdc, cam());
+    const picks = dimensions.map((d) => d.pick);
+    const hit = raycaster.intersectObjects(picks, false)[0]?.object as THREE.Mesh | undefined;
+    const dimId = (hit?.userData?.dimensionId as string | undefined) ?? null;
+    if (!dimId) return;
+    const d = dimensions.find((x) => x.id === dimId) ?? null;
+    if (!d) return;
+    setSelectedDimension(dimId);
+    const cur = dimValueMm(d.params)?.absMm ?? 0;
+    const s = window.prompt("Dimension (mm)", String(cur));
+    if (!s) return;
+    const n = Number(s.trim().replace(",", "."));
+    if (!n || !Number.isFinite(n) || n <= 0) return;
+    setDimensionValueMm(d, Math.round(n));
+  });
+
   renderer.domElement.addEventListener("pointerdown", (ev) => {
     // Marquee selection in 2D layout select tool (left button) - start pending, activate on drag.
     if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && ev.button === 0 && !measureState.enabled) {
@@ -5328,6 +5862,62 @@ export function startApp(args: AppArgs) {
         return;
       }
 
+      if (layoutTool === "dimension") {
+        if (viewMode !== "2d") return;
+        if (ev.button !== 0) return;
+
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+
+        const rect2 = renderer.domElement.getBoundingClientRect();
+        const mouse = { x: ev.clientX - rect2.left, y: ev.clientY - rect2.top };
+        const picked = pickAlignLineAt(hitPoint, mouse, rect2);
+        if (!picked) {
+          setUnderlayStatus(dimTool.a ? "Dimension: click second parallel line." : "Dimension: click first line.");
+          return;
+        }
+
+        if (!dimTool.a) {
+          dimTool.a = picked;
+          dimTool.tA = segClosestT(hitPoint, picked.segA, picked.segB);
+          setUnderlayStatus("Dimension: click second parallel line...");
+          mountProps();
+          return;
+        }
+
+        const a = dimTool.a;
+        if (!alignParallel(a, picked)) {
+          setUnderlayStatus("Dimension: lines must be parallel.");
+          return;
+        }
+        if (a.wallId === picked.wallId) {
+          setUnderlayStatus("Dimension: pick a different wall.");
+          return;
+        }
+        if (a.wallLine === "endA" || a.wallLine === "endB" || picked.wallLine === "endA" || picked.wallLine === "endB") {
+          setUnderlayStatus("Dimension: pick face/center lines (not end lines).");
+          return;
+        }
+
+        const tB = segClosestT(hitPoint, picked.segA, picked.segB);
+        const dir = a.dir.clone().normalize();
+        const n = new THREE.Vector3(-dir.z, 0, dir.x);
+        const aPt = a.segA.clone().lerp(a.segB, dimTool.tA);
+        dimTool.offsetM = n.dot(hitPoint.clone().sub(aPt));
+
+        createDimension(
+          { wallId: a.wallId, wallLine: a.wallLine, t: dimTool.tA },
+          { wallId: picked.wallId, wallLine: picked.wallLine, t: tB },
+          dimTool.offsetM
+        );
+
+        dimTool.a = null;
+        dimPreview.root.visible = false;
+        setUnderlayStatus("Dimension: placed. Click first line...");
+        mountProps();
+        return;
+      }
+
       if (layoutTool === "wall") {
         if (ev.button !== 0) return;
         // Place wall by 2 clicks on ground (XZ).
@@ -5491,6 +6081,7 @@ export function startApp(args: AppArgs) {
       const picks = instances.map((i) => i.pick);
       if (windowInst) picks.push(windowInst.pick);
       for (const w of walls) picks.push(w.mesh);
+      for (const d of dimensions) picks.push(d.pick);
       const hits = raycaster.intersectObjects(picks, false);
       const first = hits[0]?.object as THREE.Mesh | undefined;
       const kind = (first?.userData?.kind as string | undefined) ?? "module";
@@ -5516,6 +6107,30 @@ export function startApp(args: AppArgs) {
         }
         const axis = def.axis === "x" ? hitPoint.x : hitPoint.z;
         windowDragState.offsetMm = windowInst.params.centerMm - axis * 1000;
+        renderer.domElement.setPointerCapture(ev.pointerId);
+        return;
+      }
+
+      if (kind === "dimension") {
+        const dimId = (first?.userData?.dimensionId as string | undefined) ?? null;
+        if (!dimId) return;
+        if (marquee.pending && marquee.pointerId === ev.pointerId) {
+          marquee.hitSomething = true;
+          marquee.pending = false;
+          marquee.active = false;
+          marqueeEl.style.display = "none";
+        }
+        setSelectedDimension(dimId);
+        if (viewMode !== "2d" || layoutTool !== "select" || ev.button !== 0) return;
+        const d = dimensions.find((x) => x.id === dimId) ?? null;
+        if (!d) return;
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+        dimensionDragState.active = true;
+        dimensionDragState.id = dimId;
+        dimensionDragState.pointerId = ev.pointerId;
+        dimensionDragState.startWorld.copy(hitPoint);
+        dimensionDragState.startOffsetM = d.params.offsetM;
         renderer.domElement.setPointerCapture(ev.pointerId);
         return;
       }
@@ -5759,8 +6374,29 @@ export function startApp(args: AppArgs) {
       return;
     }
 
-    // Align/Trim hover highlight
-    if (mode === "layout" && viewMode === "2d" && (layoutTool === "align" || layoutTool === "trim")) {
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && dimensionDragState.active && dimensionDragState.pointerId === ev.pointerId) {
+      const d = dimensions.find((x) => x.id === dimensionDragState.id) ?? null;
+      if (!d) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      pointerNdc.set(x, y);
+      raycaster.setFromCamera(pointerNdc, cam());
+      const hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+
+      const la = wallLineSegment(d.params.a.wallId, d.params.a.wallLine);
+      if (!la) return;
+      const dir = la.dir.clone().normalize();
+      const n = new THREE.Vector3(-dir.z, 0, dir.x);
+      const delta = hitPoint.clone().sub(dimensionDragState.startWorld);
+      d.params.offsetM = dimensionDragState.startOffsetM + n.dot(delta);
+      updateDimensionGeometry(d, rect);
+      return;
+    }
+
+    // Align/Trim/Dimension hover highlight
+    if (mode === "layout" && viewMode === "2d" && (layoutTool === "align" || layoutTool === "trim" || layoutTool === "dimension")) {
       const rect = renderer.domElement.getBoundingClientRect();
       const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
       const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
@@ -5793,7 +6429,7 @@ export function startApp(args: AppArgs) {
             hudPickLine1.visible = false;
             hudPickLine2.visible = false;
           }
-        } else {
+        } else if (layoutTool === "trim") {
           trimState.hover = picked;
           if (picked) updateHudLine(hudHoverLine, picked.segA, picked.segB, thick);
           else hudHoverLine.visible = false;
@@ -5816,6 +6452,67 @@ export function startApp(args: AppArgs) {
                 hudPickLine2.visible = false;
               }
             }
+          }
+          dimPreview.root.visible = false;
+        } else {
+          // dimension
+          dimTool.hover = picked;
+          if (picked) updateHudLine(hudHoverLine, picked.segA, picked.segB, thick);
+          else hudHoverLine.visible = false;
+
+          if (dimTool.a) {
+            updateHudLine(hudPickLine1, dimTool.a.segA, dimTool.a.segB, thick);
+            if (picked && alignParallel(dimTool.a, picked) && picked.wallId !== dimTool.a.wallId) {
+              updateHudLine(hudPickLine2, picked.segA, picked.segB, thick);
+            } else {
+              hudPickLine2.visible = false;
+            }
+          } else {
+            hudPickLine1.visible = false;
+            hudPickLine2.visible = false;
+          }
+
+          // preview dimension (first ref + hovered parallel line)
+          if (dimTool.a && picked && alignParallel(dimTool.a, picked) && picked.wallId !== dimTool.a.wallId && picked.wallLine !== "endA" && picked.wallLine !== "endB" && dimTool.a.wallLine !== "endA" && dimTool.a.wallLine !== "endB") {
+            const dir = dimTool.a.dir.clone().normalize();
+            const n = new THREE.Vector3(-dir.z, 0, dir.x);
+            const aPt = dimTool.a.segA.clone().lerp(dimTool.a.segB, dimTool.tA);
+            const bT = segClosestT(hitPoint, picked.segA, picked.segB);
+            const bPt = picked.segA.clone().lerp(picked.segB, bT);
+            const off = n.dot(hitPoint.clone().sub(aPt));
+            dimTool.offsetM = off;
+            const aDim = aPt.clone().addScaledVector(n, off);
+            const bDim = bPt.clone().addScaledVector(n, off);
+
+            const setPts = (l: THREE.Line, pts: THREE.Vector3[]) => {
+              const g = new THREE.BufferGeometry().setFromPoints(pts.map((p) => p.clone().setY(0.05)));
+              l.geometry.dispose();
+              l.geometry = g;
+            };
+
+            setPts(dimPreview.ext1, [aPt, aDim]);
+            setPts(dimPreview.ext2, [bPt, bDim]);
+            setPts(dimPreview.dim, [aDim, bDim]);
+
+            const dimDir = bDim.clone().sub(aDim);
+            const len = dimDir.length();
+            const tick = Math.min(0.12, Math.max(0.03, thick * 10));
+            const dimN = len > 1e-6 ? new THREE.Vector3(-dimDir.z, 0, dimDir.x).normalize() : new THREE.Vector3(0, 0, 1);
+            const t1a = aDim.clone().addScaledVector(dimN, tick / 2);
+            const t1b = aDim.clone().addScaledVector(dimN, -tick / 2);
+            const t2a = bDim.clone().addScaledVector(dimN, tick / 2);
+            const t2b = bDim.clone().addScaledVector(dimN, -tick / 2);
+            setPts(dimPreview.tick1, [t1a, t1b]);
+            setPts(dimPreview.tick2, [t2a, t2b]);
+
+            const mid = aDim.clone().add(bDim).multiplyScalar(0.5);
+            dimPreview.text.position.set(mid.x, 0.06, mid.z);
+            const mm = Math.round(Math.abs(n.dot(bPt.clone().sub(aPt))) * 1000);
+            updateSpriteText(dimPreview.text, `${mm} mm`);
+            dimPreview.text.scale.set(thick * 40, thick * 20, 1);
+            dimPreview.root.visible = true;
+          } else {
+            dimPreview.root.visible = false;
           }
         }
       }
@@ -6040,6 +6737,19 @@ export function startApp(args: AppArgs) {
       underlayDragState.active = false;
       underlayDragState.pointerId = null;
       setUnderlayStatus("Underlay moved.");
+      commitHistory();
+      try {
+        renderer.domElement.releasePointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
+    if (dimensionDragState.active && dimensionDragState.pointerId === ev.pointerId) {
+      dimensionDragState.active = false;
+      dimensionDragState.pointerId = null;
+      dimensionDragState.id = null;
       commitHistory();
       try {
         renderer.domElement.releasePointerCapture(ev.pointerId);
@@ -6488,6 +7198,14 @@ export function startApp(args: AppArgs) {
     updateWallEditHud();
 
     const activeCam = cam();
+    if (mode === "layout" && viewMode === "2d" && dimensions.length > 0 && activeCam instanceof THREE.OrthographicCamera) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (Math.abs(activeCam.zoom - lastDimZoom) > 1e-4 || rect.width !== lastDimRectW) {
+        lastDimZoom = activeCam.zoom;
+        lastDimRectW = rect.width;
+        updateAllDimensions(rect);
+      }
+    }
     const isPhoto = renderMode === "photo_pathtrace" && ENABLE_PHOTO && activeCam instanceof THREE.PerspectiveCamera;
     const isSsgi = renderMode === "realtime_ssgi" && ENABLE_SSGI && activeCam instanceof THREE.PerspectiveCamera;
 
