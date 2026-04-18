@@ -1963,6 +1963,56 @@ export function startApp(args: AppArgs) {
       }
     }
 
+    // Wall join polys (miter/corner fills): needed so you can snap to true join corners.
+    for (const poly of wallSolvedJoinPolys) {
+      if (poly.length < 2) continue;
+      for (const p of poly) candidates.push({ p: new THREE.Vector3(p.x, 0, p.z), kind: "corner" });
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        const ax = a.x, az = a.z;
+        const bx = b.x, bz = b.z;
+        const vx = bx - ax;
+        const vz = bz - az;
+        const l2 = vx * vx + vz * vz;
+        if (l2 < 1e-12) continue;
+        const rx = raw.x - ax;
+        const rz = raw.z - az;
+        const t = Math.max(0, Math.min(1, (rx * vx + rz * vz) / l2));
+        candidates.push({ p: new THREE.Vector3(ax + vx * t, 0, az + vz * t), kind: "edge" });
+      }
+    }
+
+    // Union polygon (trimmed result): includes concave "inner" corners between two walls.
+    if (wallUnionPolys) {
+      for (const poly of wallUnionPolys as any[]) {
+        const rings = poly as any[];
+        for (const ring of rings) {
+          const pts = ring as Array<[number, number]>;
+          if (!pts || pts.length < 2) continue;
+          const n = pts.length;
+          // corners (skip last duplicate point)
+          for (let i = 0; i < n - 1; i++) {
+            const [x, y] = pts[i];
+            candidates.push({ p: new THREE.Vector3(x, 0, y), kind: "corner" });
+          }
+          // edges
+          for (let i = 0; i < n - 1; i++) {
+            const [ax, az] = pts[i];
+            const [bx, bz] = pts[i + 1];
+            const vx = bx - ax;
+            const vz = bz - az;
+            const l2 = vx * vx + vz * vz;
+            if (l2 < 1e-12) continue;
+            const rx = raw.x - ax;
+            const rz = raw.z - az;
+            const t = Math.max(0, Math.min(1, (rx * vx + rz * vz) / l2));
+            candidates.push({ p: new THREE.Vector3(ax + vx * t, 0, az + vz * t), kind: "edge" });
+          }
+        }
+      }
+    }
+
     // Module box corners
     for (const inst of instances) {
       const box = instanceWorldBox(inst);
@@ -1979,16 +2029,30 @@ export function startApp(args: AppArgs) {
     }
 
     const rawS = worldToScreen(raw, camera, rect);
-    let best: { p: THREE.Vector3; kind: "corner" | "edge" | "endpoint" | "axis"; d2: number } | null = null;
+    const bestByKind = new Map<"endpoint" | "corner" | "edge" | "axis", { p: THREE.Vector3; d2: number }>();
     for (const c of candidates) {
       const s = worldToScreen(c.p, camera, rect);
       const d = dist2(rawS, s);
-      if (!best || d < best.d2) best = { p: c.p, kind: c.kind, d2: d };
+      const prev = bestByKind.get(c.kind);
+      if (!prev || d < prev.d2) bestByKind.set(c.kind, { p: c.p, d2: d });
     }
 
-    if (!best) return { point: raw, kind: "none" };
-    if (best.d2 > maxPx * maxPx) return { point: raw, kind: "none" };
-    return { point: best.p.clone(), kind: best.kind as any };
+    const maxD2 = maxPx * maxPx;
+    // Priority: corners/endpoints must always beat edges when both are in range.
+    const pick = (k: "endpoint" | "corner" | "edge" | "axis") => {
+      const v = bestByKind.get(k);
+      if (!v) return null;
+      if (v.d2 > maxD2) return null;
+      return { point: v.p.clone(), kind: k as any };
+    };
+
+    return (
+      pick("endpoint") ??
+      pick("corner") ??
+      pick("edge") ??
+      pick("axis") ??
+      { point: raw, kind: "none" }
+    );
   }
 
   function updateWallMesh(mesh: THREE.Mesh, a: THREE.Vector3 | null, b: THREE.Vector3 | null, thicknessMm: number) {
