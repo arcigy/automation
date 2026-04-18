@@ -119,6 +119,94 @@ export function startApp(args: AppArgs) {
   let wallDebugEnabled = false;
   const wallSolvedOutlines = new Map<string, Array<{ x: number; z: number }>>();
 
+  const wallSnapMarkers = new THREE.Group();
+  wallSnapMarkers.name = "wallSnapMarkers";
+  wallSnapMarkers.visible = false;
+  layoutRoot.add(wallSnapMarkers);
+
+  const snapMatCorner = new THREE.MeshBasicMaterial({ color: 0xff4dff, depthWrite: false, transparent: true, opacity: 0.95 });
+  const snapMatAxis = new THREE.MeshBasicMaterial({ color: 0x00e5ff, depthWrite: false, transparent: true, opacity: 0.95 });
+  const snapMatEdge = new THREE.MeshBasicMaterial({ color: 0xffd166, depthWrite: false, transparent: true, opacity: 0.95 });
+  const snapMatEnd = new THREE.MeshBasicMaterial({ color: 0x3ddc97, depthWrite: false, transparent: true, opacity: 0.95 });
+  const snapGeom = new THREE.CircleGeometry(0.035, 16);
+  const makeSnapDot = (kind: "corner" | "edge" | "axis" | "endpoint") => {
+    const mat = kind === "corner" ? snapMatCorner : kind === "edge" ? snapMatEdge : kind === "axis" ? snapMatAxis : snapMatEnd;
+    const m = new THREE.Mesh(snapGeom, mat);
+    m.rotation.x = -Math.PI / 2;
+    m.position.y = 0.02;
+    m.renderOrder = 50;
+    m.userData.kind = "snapDot";
+    m.userData.snapKind = kind;
+    return m;
+  };
+
+  const clearWallSnapMarkers = () => {
+    for (const ch of [...wallSnapMarkers.children]) wallSnapMarkers.remove(ch);
+  };
+
+  const showWallSnapMarkersFor = (wallId: string | null) => {
+    clearWallSnapMarkers();
+    if (!wallId) {
+      wallSnapMarkers.visible = false;
+      return;
+    }
+    const w = walls.find((x) => x.id === wallId) ?? null;
+    if (!w) {
+      wallSnapMarkers.visible = false;
+      return;
+    }
+
+    const a = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+    const b = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+    const d = b.clone().sub(a);
+    const len = d.length();
+    if (len < 1e-6) {
+      wallSnapMarkers.visible = false;
+      return;
+    }
+    d.multiplyScalar(1 / len);
+
+    const dotA = makeSnapDot("endpoint");
+    dotA.position.x = a.x;
+    dotA.position.z = a.z;
+    wallSnapMarkers.add(dotA);
+    const dotB = makeSnapDot("endpoint");
+    dotB.position.x = b.x;
+    dotB.position.z = b.z;
+    wallSnapMarkers.add(dotB);
+
+    const mid = a.clone().addScaledVector(d, len * 0.5);
+    const dotM = makeSnapDot("axis");
+    dotM.position.x = mid.x;
+    dotM.position.z = mid.z;
+    wallSnapMarkers.add(dotM);
+
+    const poly = wallSolvedOutlines.get(wallId) ?? null;
+    if (poly && poly.length >= 3) {
+      for (const p of poly) {
+        const dot = makeSnapDot("corner");
+        dot.position.x = p.x;
+        dot.position.z = p.z;
+        wallSnapMarkers.add(dot);
+      }
+    } else {
+      const n = new THREE.Vector3(-d.z, 0, d.x);
+      const h = Math.max(1, w.params.thicknessMm / 2) / 1000;
+      const c1 = a.clone().addScaledVector(n, h);
+      const c2 = a.clone().addScaledVector(n, -h);
+      const c3 = b.clone().addScaledVector(n, -h);
+      const c4 = b.clone().addScaledVector(n, h);
+      for (const p of [c1, c2, c3, c4]) {
+        const dot = makeSnapDot("corner");
+        dot.position.x = p.x;
+        dot.position.z = p.z;
+        wallSnapMarkers.add(dot);
+      }
+    }
+
+    wallSnapMarkers.visible = viewMode === "2d";
+  };
+
   const underlayMat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
@@ -556,8 +644,8 @@ export function startApp(args: AppArgs) {
     rect: DOMRect,
     camera: THREE.Camera,
     maxPx = 14
-  ): { point: THREE.Vector3; kind: "none" | "corner" | "endpoint" | "axis" } {
-    const candidates: Array<{ p: THREE.Vector3; kind: "corner" | "endpoint" | "axis" }> = [];
+  ): { point: THREE.Vector3; kind: "none" | "corner" | "edge" | "endpoint" | "axis" } {
+    const candidates: Array<{ p: THREE.Vector3; kind: "corner" | "edge" | "endpoint" | "axis" }> = [];
 
     // Wall endpoints
     for (const w of walls) {
@@ -572,6 +660,26 @@ export function startApp(args: AppArgs) {
       const tt = Math.max(0, Math.min(1, t));
       const closest = a.clone().add(ab.multiplyScalar(tt));
       candidates.push({ p: closest, kind: "axis" });
+    }
+
+    // Wall outline corners + edges (trimmed)
+    for (const poly of wallSolvedOutlines.values()) {
+      if (poly.length < 2) continue;
+      for (const p of poly) candidates.push({ p: new THREE.Vector3(p.x, 0, p.z), kind: "corner" });
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        const ax = a.x, az = a.z;
+        const bx = b.x, bz = b.z;
+        const vx = bx - ax;
+        const vz = bz - az;
+        const l2 = vx * vx + vz * vz;
+        if (l2 < 1e-12) continue;
+        const rx = raw.x - ax;
+        const rz = raw.z - az;
+        const t = Math.max(0, Math.min(1, (rx * vx + rz * vz) / l2));
+        candidates.push({ p: new THREE.Vector3(ax + vx * t, 0, az + vz * t), kind: "edge" });
+      }
     }
 
     // Module box corners
@@ -590,7 +698,7 @@ export function startApp(args: AppArgs) {
     }
 
     const rawS = worldToScreen(raw, camera, rect);
-    let best: { p: THREE.Vector3; kind: "corner" | "endpoint" | "axis"; d2: number } | null = null;
+    let best: { p: THREE.Vector3; kind: "corner" | "edge" | "endpoint" | "axis"; d2: number } | null = null;
     for (const c of candidates) {
       const s = worldToScreen(c.p, camera, rect);
       const d = dist2(rawS, s);
@@ -666,6 +774,7 @@ export function startApp(args: AppArgs) {
 
     // Always keep per-wall solved outlines for hit-testing/export/debug.
     for (const w of solved.walls) wallSolvedOutlines.set(w.id, w.outline);
+    if (selectedKind === "wall" && selectedWallId) showWallSnapMarkersFor(selectedWallId);
 
     // Render as a single union polygon to automatically trim overlaps/spikes at joins (CAD-like).
     const toRing = (poly: Array<{ x: number; z: number }>) => {
@@ -3036,6 +3145,7 @@ export function startApp(args: AppArgs) {
 
     const w = id ? walls.find((x) => x.id === id) ?? null : null;
     if (!w) {
+      showWallSnapMarkersFor(null);
       mountProps();
       return;
     }
@@ -3043,6 +3153,7 @@ export function startApp(args: AppArgs) {
     selectedWallBox = new THREE.BoxHelper(w.root, 0x3ddc97);
     selectedWallBox.name = "wallSelectionBox";
     scene.add(selectedWallBox);
+    showWallSnapMarkersFor(id);
     mountProps();
   }
 
@@ -3526,6 +3637,8 @@ export function startApp(args: AppArgs) {
       (windowInst.outline.material as THREE.LineBasicMaterial).opacity = enabled ? 0.98 : 0.75;
       windowInst.outline.visible = true;
     }
+
+    wallSnapMarkers.visible = enabled && selectedKind === "wall" && !!selectedWallId;
 
       // Walls: render merged 2D mesh in plan view for clean joins.
       wallPlanGroup.visible = enabled;
@@ -4446,6 +4559,35 @@ export function startApp(args: AppArgs) {
       const hitPoint = new THREE.Vector3();
       if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
       const snapped = snapPoint2D(hitPoint, rect, cam());
+      if (snapped.kind !== "none") {
+        const s = worldToScreen(snapped.point, cam(), rect);
+        wallSnapHud.style.left = `${s.x}px`;
+        wallSnapHud.style.top = `${s.y}px`;
+        wallSnapHud.style.display = "block";
+        const c =
+          snapped.kind === "corner"
+            ? "#ff4dff"
+            : snapped.kind === "edge"
+              ? "#ffd166"
+              : snapped.kind === "endpoint"
+                ? "#3ddc97"
+                : "#00e5ff";
+        wallSnapHud.style.borderColor = c;
+        wallSnapHud.style.background = `${c}33`;
+      } else {
+        wallSnapHud.style.display = "none";
+      }
+    }
+
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && !dragState.active && !windowDragState.active && !wallEditHud.drag && !marquee.active) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      pointerNdc.set(x, y);
+      raycaster.setFromCamera(pointerNdc, cam());
+      const hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+      const snapped = snapPoint2D(hitPoint, rect, cam(), 12);
       if (snapped.kind !== "none") {
         const s = worldToScreen(snapped.point, cam(), rect);
         wallSnapHud.style.left = `${s.x}px`;
