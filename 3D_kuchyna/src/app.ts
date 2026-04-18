@@ -1752,7 +1752,7 @@ export function startApp(args: AppArgs) {
   const view2d = document.createElement("input");
   view2d.id = "view2d";
   view2d.type = "checkbox";
-  view2d.checked = false;
+  view2d.checked = true;
   view2d.style.justifySelf = "start";
   viewWrap.appendChild(viewLabel);
   viewWrap.appendChild(view2d);
@@ -4943,8 +4943,8 @@ export function startApp(args: AppArgs) {
     setModel(next);
   });
 
-  modeSelect.value = "build";
-  setMode("build");
+  modeSelect.value = "layout";
+  setMode("layout");
 
   const navForward = new THREE.Vector3();
   const navRight = new THREE.Vector3();
