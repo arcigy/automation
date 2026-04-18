@@ -91,7 +91,47 @@ export type CornerShelfLowerParams = {
   materials: MaterialParams;
 };
 
-export type ModuleParams = DrawerLowParams | ShelvesParams | CornerShelfLowerParams;
+export type FridgeTallParams = {
+  type: "fridge_tall";
+  width: number; // mm
+  height: number; // mm
+  depth: number; // mm
+  boardThickness: number; // mm
+  backThickness: number; // mm
+  plinthHeight: number; // mm
+  plinthSetbackMm: number; // mm
+
+  frontGap: number; // mm
+  sideGap: number; // mm
+  topGap: number; // mm
+  bottomGap: number; // mm
+  frontThicknessMm: number; // mm
+  drawerCount: number; // 0..6
+  drawerFrontHeights: number[]; // mm (count=drawerCount)
+
+  handleType: "none" | "bar" | "knob" | "cup" | "gola";
+  handlePositionMm: number; // mm
+  handleLengthMm: number; // mm
+  handleSizeMm: number; // mm
+  handleProjectionMm: number; // mm
+
+  fridgeWidthMm: number; // mm
+  fridgeHeightMm: number; // mm
+  fridgeDepthMm: number; // mm
+  fridgeSideClearanceMm: number;
+  fridgeTopClearanceMm: number;
+  fridgeBottomClearanceMm: number;
+
+  gapAboveDrawersMm: number; // mm
+
+  freezerDoorHeightMm: number; // mm
+  fridgeDoorGapMm: number; // mm
+  doorHandleOffsetFromSplitMm: number; // mm
+
+  materials: MaterialParams;
+};
+
+export type ModuleParams = DrawerLowParams | ShelvesParams | CornerShelfLowerParams | FridgeTallParams;
 
 export function makeDefaultDrawerLowParams(): DrawerLowParams {
   const base: DrawerLowParams = {
@@ -185,10 +225,70 @@ export function makeDefaultCornerShelfLowerParams(): CornerShelfLowerParams {
   return base;
 }
 
+export function makeDefaultFridgeTallParams(): FridgeTallParams {
+  const boardT = 18;
+  const plinthH = 0;
+  const fridgeH = 1770;
+  const topClear = 5;
+  const bottomClear = 5;
+  const height = plinthH + 2 * boardT + fridgeH + topClear + bottomClear;
+
+  const base: FridgeTallParams = {
+    type: "fridge_tall",
+    width: 600,
+    height,
+    depth: 600,
+    boardThickness: boardT,
+    backThickness: 8,
+    plinthHeight: plinthH,
+    plinthSetbackMm: 0,
+
+    frontGap: 2,
+    sideGap: 2,
+    topGap: 2,
+    bottomGap: 2,
+    frontThicknessMm: 19,
+    drawerCount: 0,
+    drawerFrontHeights: [],
+
+    handleType: "bar",
+    handlePositionMm: 60,
+    handleLengthMm: 160,
+    handleSizeMm: 12,
+    handleProjectionMm: 14,
+
+    fridgeWidthMm: 560,
+    fridgeHeightMm: fridgeH,
+    fridgeDepthMm: 550,
+    fridgeSideClearanceMm: 2,
+    fridgeTopClearanceMm: topClear,
+    fridgeBottomClearanceMm: bottomClear,
+
+    gapAboveDrawersMm: 10,
+
+    freezerDoorHeightMm: 700,
+    fridgeDoorGapMm: 2,
+    doorHandleOffsetFromSplitMm: 45,
+
+    materials: {
+      bodyKey: "carcass_default",
+      frontKey: "front_default",
+      drawerKey: "drawer_unused",
+      bodyColor: "#b8bcc7",
+      frontColor: "#3a7bd5",
+      drawerColor: "#e1a45a",
+      bodyPbr: { id: "wood_veneer_oak_7760_1k", rotationDeg: 0, tintStrength: 0 }
+    }
+  };
+
+  return base;
+}
+
 export function validateModule(p: ModuleParams): string[] {
   if (p.type === "drawer_low") return validateDrawerLow(p);
   if (p.type === "shelves") return validateShelves(p);
   if (p.type === "corner_shelf_lower") return validateCornerShelfLower(p);
+  if (p.type === "fridge_tall") return validateFridgeTall(p);
   return ["Unknown module type."];
 }
 
@@ -342,6 +442,71 @@ export function validateCornerShelfLower(p: CornerShelfLowerParams): string[] {
   if (p.backThickness >= p.depth) errors.push("backThickness must be smaller than depth.");
 
   validateShelfLayout(errors, p);
+  validateMaterials(errors, p.materials);
+  return errors;
+}
+
+export function validateFridgeTall(p: FridgeTallParams): string[] {
+  const errors: string[] = [];
+
+  positiveNumber(errors, "width", p.width, 200);
+  positiveNumber(errors, "height", p.height, 400);
+  positiveNumber(errors, "depth", p.depth, 200);
+  positiveNumber(errors, "boardThickness", p.boardThickness, 5);
+  positiveNumber(errors, "backThickness", p.backThickness, 3);
+  positiveNumber(errors, "plinthHeight", p.plinthHeight, 0);
+  positiveNumber(errors, "plinthSetbackMm", p.plinthSetbackMm, 0);
+
+  positiveNumber(errors, "frontGap", p.frontGap, 0);
+  positiveNumber(errors, "sideGap", p.sideGap, 0);
+  positiveNumber(errors, "topGap", p.topGap, 0);
+  positiveNumber(errors, "bottomGap", p.bottomGap, 0);
+  positiveNumber(errors, "frontThicknessMm", p.frontThicknessMm, 5);
+
+  if (!Number.isInteger(p.drawerCount) || p.drawerCount < 0 || p.drawerCount > 6) errors.push("drawerCount must be 0..6.");
+  if (!Array.isArray(p.drawerFrontHeights) || p.drawerFrontHeights.some((n) => typeof n !== "number")) {
+    errors.push("drawerFrontHeights must be an array of numbers.");
+  } else if (p.drawerFrontHeights.length !== p.drawerCount) {
+    errors.push("drawerFrontHeights count must match drawerCount.");
+  }
+
+  positiveNumber(errors, "handlePositionMm", p.handlePositionMm, 0);
+  positiveNumber(errors, "handleLengthMm", p.handleLengthMm, 0);
+  positiveNumber(errors, "handleSizeMm", p.handleSizeMm, 0);
+  positiveNumber(errors, "handleProjectionMm", p.handleProjectionMm, 0);
+
+  positiveNumber(errors, "fridgeWidthMm", p.fridgeWidthMm, 100);
+  positiveNumber(errors, "fridgeHeightMm", p.fridgeHeightMm, 100);
+  positiveNumber(errors, "fridgeDepthMm", p.fridgeDepthMm, 100);
+  positiveNumber(errors, "fridgeSideClearanceMm", p.fridgeSideClearanceMm, 0);
+  positiveNumber(errors, "fridgeTopClearanceMm", p.fridgeTopClearanceMm, 0);
+  positiveNumber(errors, "fridgeBottomClearanceMm", p.fridgeBottomClearanceMm, 0);
+  positiveNumber(errors, "gapAboveDrawersMm", p.gapAboveDrawersMm, 0);
+  positiveNumber(errors, "freezerDoorHeightMm", p.freezerDoorHeightMm, 50);
+  positiveNumber(errors, "fridgeDoorGapMm", p.fridgeDoorGapMm, 0);
+  positiveNumber(errors, "doorHandleOffsetFromSplitMm", p.doorHandleOffsetFromSplitMm, 0);
+
+  if (p.backThickness >= p.depth) errors.push("backThickness must be smaller than depth.");
+  if (p.plinthSetbackMm > p.depth) errors.push("plinthSetbackMm must be <= depth.");
+
+  const internalW = p.width - 2 * p.boardThickness;
+  if (p.fridgeWidthMm + 2 * p.fridgeSideClearanceMm > internalW + 0.5) {
+    errors.push("Fridge does not fit: niche width + 2*side clearance exceeds internal cabinet width.");
+  }
+
+  const drawerCount = Math.max(0, Math.min(6, Math.round(p.drawerCount)));
+  const drawerHeights = Array.isArray(p.drawerFrontHeights) ? p.drawerFrontHeights.slice(0, drawerCount) : [];
+  const sumDrawerHeights = drawerHeights.reduce((acc, n) => acc + (Number.isFinite(n) ? Math.max(0, n) : 0), 0);
+  const sumFrontGaps = drawerCount > 0 ? Math.max(0, p.frontGap) * Math.max(0, drawerCount - 1) : 0;
+  const baseStartMm = p.plinthHeight + p.boardThickness + (drawerCount > 0 ? p.bottomGap : 0);
+  const afterDrawersMm =
+    baseStartMm + (drawerCount > 0 ? sumDrawerHeights + sumFrontGaps + Math.max(0, p.gapAboveDrawersMm) + p.boardThickness : 0);
+  const fridgeZoneMm = Math.max(0, p.fridgeHeightMm) + Math.max(0, p.fridgeTopClearanceMm) + Math.max(0, p.fridgeBottomClearanceMm);
+  const requiredMinHeightMm = afterDrawersMm + fridgeZoneMm + p.boardThickness;
+  if (p.height + 0.5 < requiredMinHeightMm) {
+    errors.push("Cabinet height too small: fridge niche + clearances does not fit.");
+  }
+
   validateMaterials(errors, p.materials);
   return errors;
 }

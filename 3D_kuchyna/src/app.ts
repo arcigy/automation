@@ -1,13 +1,20 @@
 import * as THREE from "three";
 import polygonClipping from "polygon-clipping";
 import type { ModuleParams } from "./model/cabinetTypes";
-import { makeDefaultCornerShelfLowerParams, makeDefaultDrawerLowParams, makeDefaultShelvesParams, validateModule } from "./model/cabinetTypes";
+import {
+  makeDefaultCornerShelfLowerParams,
+  makeDefaultDrawerLowParams,
+  makeDefaultFridgeTallParams,
+  makeDefaultShelvesParams,
+  validateModule
+} from "./model/cabinetTypes";
 import { buildModule } from "./geometry/buildModule";
 import { createScene } from "./scene/createScene";
 import { createPartPanel, type GrainAlong, type OverlapRow } from "./ui/createPartPanel";
 import { createLayoutPanel } from "./ui/createLayoutPanel";
 import { disposeObject3D } from "./scene/disposeObject3D";
 import { createDrawerLowControls } from "./ui/createDrawerLowControls";
+import { createFridgeTallControls } from "./ui/createFridgeTallControls";
 import { createShelvesControls } from "./ui/createShelvesControls";
 import { createCornerShelfLowerControls } from "./ui/createCornerShelfLowerControls";
 import { createSsgiPipeline, type SsgiPipeline } from "./rendering/ssgiPipeline";
@@ -2899,6 +2906,7 @@ export function startApp(args: AppArgs) {
 
   modelSelect.innerHTML = `
       <option value="drawer_low">drawer_low</option>
+      <option value="fridge_tall">fridge_tall</option>
       <option value="shelves">shelves</option>
       <option value="corner_shelf_lower">corner_shelf_lower</option>
     `;
@@ -2917,6 +2925,9 @@ export function startApp(args: AppArgs) {
   const addDrawerBtn = document.createElement("button");
   addDrawerBtn.type = "button";
   addDrawerBtn.textContent = "Add drawer";
+  const addFridgeBtn = document.createElement("button");
+  addFridgeBtn.type = "button";
+  addFridgeBtn.textContent = "Add fridge";
   const addShelvesBtn = document.createElement("button");
   addShelvesBtn.type = "button";
   addShelvesBtn.textContent = "Add shelves";
@@ -2924,6 +2935,7 @@ export function startApp(args: AppArgs) {
   addCornerBtn.type = "button";
   addCornerBtn.textContent = "Add corner";
   addWrap.appendChild(addDrawerBtn);
+  addWrap.appendChild(addFridgeBtn);
   addWrap.appendChild(addShelvesBtn);
   addWrap.appendChild(addCornerBtn);
 
@@ -4024,6 +4036,7 @@ export function startApp(args: AppArgs) {
 
   const g2 = tb.addGroup();
   tb.toolButton(g2, { title: "Add drawer", iconSvg: I_CABINET, onClick: () => (ensureLayoutMode(), addInstance("drawer_low")) });
+  tb.toolButton(g2, { title: "Add fridge", iconSvg: I_CABINET, onClick: () => (ensureLayoutMode(), addInstance("fridge_tall")) });
   tb.toolButton(g2, { title: "Add shelves", iconSvg: I_CABINET, onClick: () => (ensureLayoutMode(), addInstance("shelves")) });
   tb.toolButton(g2, { title: "Add corner", iconSvg: I_CABINET, onClick: () => (ensureLayoutMode(), addInstance("corner_shelf_lower")) });
   tb.toolButton(g2, {
@@ -4337,6 +4350,7 @@ export function startApp(args: AppArgs) {
   });
 
   addDrawerBtn.addEventListener("click", () => addInstance("drawer_low"));
+  addFridgeBtn.addEventListener("click", () => addInstance("fridge_tall"));
   addShelvesBtn.addEventListener("click", () => addInstance("shelves"));
   addCornerBtn.addEventListener("click", () => addInstance("corner_shelf_lower"));
   addWindowBtn.addEventListener("click", () => addOrSelectWindow());
@@ -4803,13 +4817,21 @@ export function startApp(args: AppArgs) {
 
   function mountInstanceControls(inst: LayoutInstance) {
     instanceEditorHost.innerHTML = "";
+
     if (inst.params.type === "drawer_low") {
       createDrawerLowControls(instanceEditorHost, inst.params, { onChange: () => rebuildInstance(inst) });
-    } else if (inst.params.type === "shelves") {
-      createShelvesControls(instanceEditorHost, inst.params, { onChange: () => rebuildInstance(inst) });
-    } else {
-      createCornerShelfLowerControls(instanceEditorHost, inst.params, { onChange: () => rebuildInstance(inst) });
+      return;
     }
+    if (inst.params.type === "fridge_tall") {
+      createFridgeTallControls(instanceEditorHost, inst.params, { onChange: () => rebuildInstance(inst) });
+      return;
+    }
+    if (inst.params.type === "shelves") {
+      createShelvesControls(instanceEditorHost, inst.params, { onChange: () => rebuildInstance(inst) });
+      return;
+    }
+
+    createCornerShelfLowerControls(instanceEditorHost, inst.params, { onChange: () => rebuildInstance(inst) });
   }
 
   function rebuildInstance(inst: LayoutInstance) {
@@ -5053,9 +5075,11 @@ export function startApp(args: AppArgs) {
     const nextParams =
       type === "drawer_low"
         ? makeDefaultDrawerLowParams()
-        : type === "shelves"
-          ? makeDefaultShelvesParams()
-          : makeDefaultCornerShelfLowerParams();
+        : type === "fridge_tall"
+          ? makeDefaultFridgeTallParams()
+          : type === "shelves"
+            ? makeDefaultShelvesParams()
+            : makeDefaultCornerShelfLowerParams();
 
     // Keep layout view clean (no open doors for bounding boxes).
     if ("doorOpen" in nextParams) (nextParams as any).doorOpen = false;
@@ -5286,6 +5310,8 @@ export function startApp(args: AppArgs) {
 
     if (params.type === "drawer_low") {
       createDrawerLowControls(editorHost, params, { onChange: () => afterParamsChanged() });
+    } else if (params.type === "fridge_tall") {
+      createFridgeTallControls(editorHost, params, { onChange: () => afterParamsChanged() });
     } else if (params.type === "shelves") {
       createShelvesControls(editorHost, params, { onChange: () => afterParamsChanged() });
     } else {
@@ -5350,13 +5376,15 @@ export function startApp(args: AppArgs) {
     controls.update();
   };
 
-  const setModel = (type: "drawer_low" | "shelves" | "corner_shelf_lower") => {
+  const setModel = (type: "drawer_low" | "fridge_tall" | "shelves" | "corner_shelf_lower") => {
     params =
       type === "drawer_low"
         ? makeDefaultDrawerLowParams()
-        : type === "shelves"
-          ? makeDefaultShelvesParams()
-          : makeDefaultCornerShelfLowerParams();
+        : type === "fridge_tall"
+          ? makeDefaultFridgeTallParams()
+          : type === "shelves"
+            ? makeDefaultShelvesParams()
+            : makeDefaultCornerShelfLowerParams();
     modelSelect.value = type;
     hiddenParts.clear();
     selectMesh(null);
@@ -5378,9 +5406,11 @@ export function startApp(args: AppArgs) {
     inst.params =
       inst.params.type === "drawer_low"
         ? makeDefaultDrawerLowParams()
-        : inst.params.type === "shelves"
-          ? makeDefaultShelvesParams()
-          : makeDefaultCornerShelfLowerParams();
+        : inst.params.type === "fridge_tall"
+          ? makeDefaultFridgeTallParams()
+          : inst.params.type === "shelves"
+            ? makeDefaultShelvesParams()
+            : makeDefaultCornerShelfLowerParams();
     mountInstanceControls(inst);
     rebuildInstance(inst);
   });
@@ -6949,7 +6979,13 @@ export function startApp(args: AppArgs) {
     if (mode !== "build") return;
     const v = modelSelect.value;
     const next =
-      v === "shelves" ? "shelves" : v === "corner_shelf_lower" ? "corner_shelf_lower" : "drawer_low";
+      v === "fridge_tall"
+        ? "fridge_tall"
+        : v === "shelves"
+          ? "shelves"
+          : v === "corner_shelf_lower"
+            ? "corner_shelf_lower"
+            : "drawer_low";
     setModel(next);
   });
 
