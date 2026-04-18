@@ -1,4 +1,4 @@
-import * as THREE from "three";
+﻿import * as THREE from "three";
 import type { CornerShelfLowerParams } from "../model/cabinetTypes";
 import { computeShelfHeightsFromGaps } from "../model/cabinetTypes";
 import { getPbrMaterialWorldSizeM, getPbrWoodMaterial } from "../materials/pbrMaterials";
@@ -17,6 +17,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
   const boardT = p.boardThickness * MM_TO_M;
   const backT = p.backThickness * MM_TO_M;
   const plinthH = p.plinthHeight * MM_TO_M;
+  const plinthSetback = Math.max(0, p.plinthSetbackMm) * MM_TO_M;
   const shelfT = p.shelfThickness * MM_TO_M;
   const fitEps = 0.0002; // 0.2mm: avoids tiny overlaps from float math
 
@@ -66,6 +67,11 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
     mesh.userData.grainAlong = grainAlong;
   };
 
+  const setParamKeys = (obj: THREE.Object3D, keys: Array<keyof CornerShelfLowerParams | string>) => {
+    (obj as any).userData ??= {};
+    (obj as any).userData.paramKeys = [...keys];
+  };
+
   // Layout:
   // - Inner corner (where walls meet) is at (-lenX/2, -lenZ/2).
   // - X run extends to +lenX/2
@@ -82,6 +88,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
     sideX.name = "side_end_x";
     sideX.position.set(lenX / 2 - boardT / 2, plinthH + openingH / 2, innerZ + depth / 2);
     setPartMeta(sideX, { width: boardT, height: openingH, depth }, "height");
+    setParamKeys(sideX, ["lengthX", "height", "depth", "boardThickness", "plinthHeight"]);
     g.add(sideX);
 
     const sideGeoZ = new THREE.BoxGeometry(depth, openingH, boardT);
@@ -89,6 +96,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
     sideZ.name = "side_end_z";
     sideZ.position.set(innerX + depth / 2, plinthH + openingH / 2, lenZ / 2 - boardT / 2);
     setPartMeta(sideZ, { width: depth, height: openingH, depth: boardT }, "height");
+    setParamKeys(sideZ, ["lengthZ", "height", "depth", "boardThickness", "plinthHeight"]);
     g.add(sideZ);
   }
 
@@ -102,6 +110,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
     backX.name = "back_x";
     backX.position.set(innerX0 + fitEps / 2 + backXLen / 2, plinthH + openingH / 2, innerZ + backT / 2);
     setPartMeta(backX, { width: backXLen, height: openingH, depth: backT }, "width");
+    setParamKeys(backX, ["lengthX", "height", "depth", "backThickness", "plinthHeight"]);
     g.add(backX);
 
     const innerZ0 = innerZ + backT;
@@ -112,6 +121,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
     backZ.name = "back_z";
     backZ.position.set(innerX + backT / 2, plinthH + openingH / 2, innerZ0 + fitEps / 2 + backZLen / 2);
     setPartMeta(backZ, { width: backT, height: openingH, depth: backZLen }, "depth");
+    setParamKeys(backZ, ["lengthZ", "height", "depth", "backThickness", "plinthHeight"]);
     g.add(backZ);
   }
 
@@ -154,6 +164,12 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
     const legGeo = new THREE.CylinderGeometry(legRadius, legRadius, plinthH, 18);
     const inset = 0.03;
 
+    // Keep legs behind the kickboards (same rule as straight cabinets).
+    const kickDepth = Math.min(boardT, depth * 0.2);
+    const kickSetback = Math.min(plinthSetback, depth / 2);
+    const kickBackFaceZ = depth - kickDepth - kickSetback;
+    const kickBackFaceX = depth - kickDepth - kickSetback;
+
     const pts: Array<[string, number, number]> = [
       ["leg_inner", innerX + inset, innerZ + inset],
       ["leg_end_x", lenX / 2 - inset, innerZ + inset],
@@ -162,10 +178,15 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
     ];
 
     for (const [name, x, z] of pts) {
+      const maxX = innerX + kickBackFaceX - legRadius - 0.01;
+      const maxZ = innerZ + kickBackFaceZ - legRadius - 0.01;
+      const clampedX = Math.min(x, maxX);
+      const clampedZ = Math.min(z, maxZ);
       const leg = new THREE.Mesh(legGeo, legMat);
       leg.name = name;
-      leg.position.set(x, plinthH / 2, z);
+      leg.position.set(clampedX, plinthH / 2, clampedZ);
       setPartMetaMm(leg, { width: legRadius * 2 * 1000, height: p.plinthHeight, depth: legRadius * 2 * 1000 }, "none");
+      setParamKeys(leg, ["plinthHeight", "plinthSetbackMm", "depth", "lengthX", "lengthZ"]);
       g.add(leg);
     }
   }
@@ -173,6 +194,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
   // Kickboards on both faces
   {
     const kickDepth = Math.min(boardT, depth * 0.2);
+    const kickSetback = Math.min(plinthSetback, depth / 2);
     const cornerW = boardT + 0.002;
 
     // IMPORTANT: front parts must NOT run through the inner elbow area (depth x depth overlap).
@@ -185,15 +207,17 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
       const kickCornerXGeo = new THREE.BoxGeometry(cornerW, plinthH, kickDepth);
       const kickCornerX = new THREE.Mesh(kickCornerXGeo, bodyMat);
       kickCornerX.name = "kick_corner_x";
-      kickCornerX.position.set(innerX + depth + cornerW / 2, plinthH / 2, innerZ + depth - kickDepth / 2);
+      kickCornerX.position.set(innerX + depth + cornerW / 2, plinthH / 2, innerZ + depth - kickDepth / 2 - kickSetback);
       setPartMeta(kickCornerX, { width: cornerW, height: plinthH, depth: kickDepth }, "width");
+      setParamKeys(kickCornerX, ["plinthHeight", "plinthSetbackMm", "depth", "boardThickness"]);
       g.add(kickCornerX);
 
       const kickCornerZGeo = new THREE.BoxGeometry(kickDepth, plinthH, cornerW);
       const kickCornerZ = new THREE.Mesh(kickCornerZGeo, bodyMat);
       kickCornerZ.name = "kick_corner_z";
-      kickCornerZ.position.set(innerX + depth - kickDepth / 2, plinthH / 2, innerZ + depth + cornerW / 2);
+      kickCornerZ.position.set(innerX + depth - kickDepth / 2 - kickSetback, plinthH / 2, innerZ + depth + cornerW / 2);
       setPartMeta(kickCornerZ, { width: kickDepth, height: plinthH, depth: cornerW }, "depth");
+      setParamKeys(kickCornerZ, ["plinthHeight", "plinthSetbackMm", "depth", "boardThickness"]);
       g.add(kickCornerZ);
     }
 
@@ -204,8 +228,9 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
       const kickGeoX = new THREE.BoxGeometry(kickXLen, plinthH, kickDepth);
       const kickX = new THREE.Mesh(kickGeoX, bodyMat);
       kickX.name = "kick_x";
-      kickX.position.set(kickX0 + fitEps / 2 + kickXLen / 2, plinthH / 2, innerZ + depth - kickDepth / 2);
+      kickX.position.set(kickX0 + fitEps / 2 + kickXLen / 2, plinthH / 2, innerZ + depth - kickDepth / 2 - kickSetback);
       setPartMeta(kickX, { width: kickXLen, height: plinthH, depth: kickDepth }, "width");
+      setParamKeys(kickX, ["plinthHeight", "plinthSetbackMm", "depth", "lengthX", "boardThickness"]);
       g.add(kickX);
     }
 
@@ -216,8 +241,9 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
       const kickGeoZ = new THREE.BoxGeometry(kickDepth, plinthH, kickZLen);
       const kickZ = new THREE.Mesh(kickGeoZ, bodyMat);
       kickZ.name = "kick_z";
-      kickZ.position.set(innerX + depth - kickDepth / 2, plinthH / 2, kickZ0 + fitEps / 2 + kickZLen / 2);
+      kickZ.position.set(innerX + depth - kickDepth / 2 - kickSetback, plinthH / 2, kickZ0 + fitEps / 2 + kickZLen / 2);
       setPartMeta(kickZ, { width: kickDepth, height: plinthH, depth: kickZLen }, "depth");
+      setParamKeys(kickZ, ["plinthHeight", "plinthSetbackMm", "depth", "lengthZ", "boardThickness"]);
       g.add(kickZ);
     }
   }
@@ -257,6 +283,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
         shelfX.name = `shelf_${i + 1}_x`;
         shelfX.position.set(innerX + backT + shelfXLenFull / 2, y, innerZ + backT + shelfDepth / 2);
         setPartMeta(shelfX, { width: shelfXLenFull, height: shelfT, depth: shelfDepth }, "width");
+        setParamKeys(shelfX, ["shelfCount", "shelfThickness", "shelfAutoFit", "shelfGaps", "height", "plinthHeight", "boardThickness"]);
         g.add(shelfX);
       }
 
@@ -269,6 +296,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
         shelfZ.name = `shelf_${i + 1}_z`;
         shelfZ.position.set(innerX + backT + shelfDepth / 2, y, elbowZ + shelfZLenButt / 2);
         setPartMeta(shelfZ, { width: shelfDepth, height: shelfT, depth: shelfZLenButt }, "depth");
+        setParamKeys(shelfZ, ["shelfCount", "shelfThickness", "shelfAutoFit", "shelfGaps", "height", "plinthHeight", "boardThickness"]);
         g.add(shelfZ);
       }
     }
@@ -280,7 +308,9 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
     const doorH = Math.max(0.1, openingH);
     const doorCenterY = plinthH + openingH / 2;
     const openAngle = p.doorOpen ? Math.PI / 2 : 0;
-    const hingeCount = p.hingeCountPerDoor === 2 ? 2 : 3;
+    const hingeCount = clampInt(p.hingeCountPerDoor, 1, 6);
+    const hingeTopOffset = Math.max(0, p.hingeTopOffsetMm) * MM_TO_M;
+    const hingeBottomOffset = Math.max(0, p.hingeBottomOffsetMm) * MM_TO_M;
 
     // IMPORTANT: match the toe-kick logic:
     // Front faces must NOT run through the inner elbow overlap area (depth x depth).
@@ -301,7 +331,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
         elbowX,
         elbowX + outerXLen,
         elbowZ + doorT / 2 + eps,
-        "right",
+        p.hingeSideFrontZ,
         openAngle
       );
 
@@ -314,7 +344,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
           elbowZ + buttOffset,
           elbowZ + outerZLen,
           elbowX + doorT / 2 + eps,
-          "top",
+          p.hingeSideFrontX,
           openAngle,
           false
         );
@@ -389,11 +419,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
       const hingeX = 0.004; // slightly inside the Z-door thickness
       const hingeZ = -doorT / 2 - hingeD / 2 - 0.001;
 
-      const marginY = Math.min(0.12, Math.max(0.03, doorH / 2 - hingeH / 2 - 0.02));
-      const ys = Array.from({ length: hingeCount }, (_, idx) => {
-        const t = hingeCount === 1 ? 0.5 : idx / (hingeCount - 1);
-        return -doorH / 2 + marginY + t * (doorH - 2 * marginY);
-      });
+      const ys = computeHingeYs(doorH, hingeCount, hingeTopOffset, hingeBottomOffset);
       ys.forEach((y, idx) => {
         const hinge = new THREE.Mesh(hingeGeo, hingeMat);
         hinge.name = `bifold_hinge_${idx + 1}`;
@@ -409,22 +435,24 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
       startZ: number,
       endZ: number,
       planeX: number,
-      hingeSide: "bottom" | "top",
+      hingeSide: "left" | "right",
       angle: number,
       withHinges: boolean
     ) {
       const doorW = Math.max(0.05, endZ - startZ);
-      const pivotZ = hingeSide === "bottom" ? startZ : endZ;
+      // Map "left/right" to the Z span endpoints (start/end), so UI stays consistent
+      // with other cabinets while geometry still hinges on either edge of the door leaf.
+      const pivotZ = hingeSide === "left" ? startZ : endZ;
       const pivot = new THREE.Group();
       pivot.name = `${doorName}_pivot`;
       pivot.position.set(planeX, doorCenterY, pivotZ);
       // Rotate around Y, because the door plane is perpendicular.
-      pivot.rotation.y = hingeSide === "bottom" ? angle : -angle;
+      pivot.rotation.y = hingeSide === "left" ? angle : -angle;
 
       const doorGeo = new THREE.BoxGeometry(doorT, doorH, doorW);
       const door = new THREE.Mesh(doorGeo, frontMat);
       door.name = doorName;
-      door.position.set(0, 0, hingeSide === "bottom" ? doorW / 2 : -doorW / 2);
+      door.position.set(0, 0, hingeSide === "left" ? doorW / 2 : -doorW / 2);
       setPartMeta(door, { width: doorT, height: doorH, depth: doorW }, "height");
       pivot.add(door);
 
@@ -434,13 +462,9 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
         const hingeD = 0.018;
         const hingeGeo = new THREE.BoxGeometry(hingeD, hingeH, hingeW);
         const hingeInset = 0.006;
-        const hingeZLocal = hingeSide === "bottom" ? hingeW / 2 + hingeInset : -hingeW / 2 - hingeInset;
+        const hingeZLocal = hingeSide === "left" ? hingeW / 2 + hingeInset : -hingeW / 2 - hingeInset;
         const hingeXLocal = -doorT / 2 - hingeD / 2 - 0.001;
-        const marginY = Math.min(0.12, Math.max(0.03, doorH / 2 - hingeH / 2 - 0.02));
-        const ys = Array.from({ length: hingeCount }, (_, idx) => {
-          const t = hingeCount === 1 ? 0.5 : idx / (hingeCount - 1);
-          return -doorH / 2 + marginY + t * (doorH - 2 * marginY);
-        });
+        const ys = computeHingeYs(doorH, hingeCount, hingeTopOffset, hingeBottomOffset);
         ys.forEach((y, idx) => {
           const hinge = new THREE.Mesh(hingeGeo, hingeMat);
           hinge.name = `${hingePrefix}_${idx + 1}`;
@@ -464,11 +488,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
       const hingeX = -doorZW + hingeW / 2 + 0.004;
       const hingeZ = -doorT / 2 - hingeD / 2 - 0.001;
 
-      const marginY = Math.min(0.12, Math.max(0.03, doorH / 2 - hingeH / 2 - 0.02));
-      const ys = Array.from({ length: hingeCount }, (_, idx) => {
-        const t = hingeCount === 1 ? 0.5 : idx / (hingeCount - 1);
-        return -doorH / 2 + marginY + t * (doorH - 2 * marginY);
-      });
+      const ys = computeHingeYs(doorH, hingeCount, hingeTopOffset, hingeBottomOffset);
 
       ys.forEach((y, idx) => {
         const hinge = new THREE.Mesh(hingeGeo, hingeMat);
@@ -489,11 +509,7 @@ export function buildCornerShelfLower(p: CornerShelfLowerParams): THREE.Group {
       const hingeX = hingeDir * (hingeW / 2 + hingeInsetX);
       const hingeZ = -doorT / 2 - hingeD / 2 - 0.001; // behind door
 
-      const marginY = Math.min(0.12, Math.max(0.03, doorH / 2 - hingeH / 2 - 0.02));
-      const ys = Array.from({ length: hingeCount }, (_, idx) => {
-        const t = hingeCount === 1 ? 0.5 : idx / (hingeCount - 1);
-        return -doorH / 2 + marginY + t * (doorH - 2 * marginY);
-      });
+      const ys = computeHingeYs(doorH, hingeCount, hingeTopOffset, hingeBottomOffset);
       ys.forEach((y, idx) => {
         const hinge = new THREE.Mesh(hingeGeo, hingeMat);
         hinge.name = `${hingePrefix}_${idx + 1}`;
@@ -515,3 +531,27 @@ function parseHexColor(hex: string): number {
 function safeDim(n: number) {
   return Math.max(0.01, n);
 }
+
+function clampInt(value: unknown, min: number, max: number) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, Math.round(n)));
+}
+
+function computeHingeYs(doorH: number, count: number, topOffset: number, bottomOffset: number) {
+  const c = Math.max(1, Math.round(count));
+  if (c === 1) return [0];
+
+  const yTop = doorH / 2 - Math.max(0, topOffset);
+  const yBottom = -doorH / 2 + Math.max(0, bottomOffset);
+
+  const safeMargin = Math.min(0.12, Math.max(0.03, doorH / 2 - 0.025 - 0.02));
+  const a = yTop > yBottom ? yTop : doorH / 2 - safeMargin;
+  const b = yTop > yBottom ? yBottom : -doorH / 2 + safeMargin;
+
+  return Array.from({ length: c }, (_, idx) => {
+    const t = c === 1 ? 0.5 : idx / (c - 1);
+    return b + t * (a - b);
+  });
+}
+

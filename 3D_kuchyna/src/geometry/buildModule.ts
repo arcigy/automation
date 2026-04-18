@@ -1,4 +1,5 @@
 import type { ModuleParams } from "../model/cabinetTypes";
+import { normalizeModuleParams } from "../model/cabinetTypes";
 import { buildDrawerLow } from "./buildDrawerLow";
 import { buildCornerShelfLower } from "./buildCornerShelfLower";
 import { buildShelves } from "./buildShelves";
@@ -11,6 +12,7 @@ import { buildMicrowaveOvenTall } from "./buildMicrowaveOvenTall";
 import { buildTopDrawersDoorsLow } from "./buildTopDrawersDoorsLow";
 
 export function buildModule(p: ModuleParams) {
+  p = normalizeModuleParams(p);
   let root;
   switch (p.type) {
     case "drawer_low":

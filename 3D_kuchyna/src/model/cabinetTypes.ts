@@ -109,13 +109,33 @@ export type ShelvesParams = {
   boardThickness: number; // mm
   backThickness: number; // mm
   plinthHeight: number; // mm
+  plinthSetbackMm: number; // mm (kickboard setback from cabinet front)
+  wallMounted: boolean; // true = no legs/kickboard
+
+  // Door/front sizing (same semantics as drawer_low reveals)
+  frontGap: number; // mm (center gap between doors when doorDouble=true)
+  sideGap: number; // mm (left/right reveal)
+  topGap: number; // mm (top reveal)
+  bottomGap: number; // mm (bottom reveal above plinth)
+  frontThicknessMm: number; // mm
+
+  // Handles (same contract as drawer_low)
+  handleType: "none" | "bar" | "knob" | "cup" | "gola";
+  handlePositionMm: number; // mm from top edge of each door
+  handleLengthMm: number; // mm
+  handleSizeMm: number; // mm
+  handleProjectionMm: number; // mm
+
   shelfCount: number; // compartments (clear spaces); internal shelves = shelfCount - 1
   shelfThickness: number; // mm
   shelfAutoFit: boolean; // when true, shelfGaps is recomputed to equal spacing
   shelfGaps: number[]; // mm clear gaps between boards (count = shelfCount)
   doorDouble: boolean; // false = single door, true = double door
   doorOpen: boolean; // simple preview state
+  hingeSide: "left" | "right"; // used when doorDouble=false
   hingeCountPerDoor: number; // usually 2 or 3
+  hingeTopOffsetMm: number; // mm from top edge of door to top hinge center
+  hingeBottomOffsetMm: number; // mm from bottom edge of door to bottom hinge center
   materials: MaterialParams;
 };
 
@@ -128,13 +148,21 @@ export type CornerShelfLowerParams = {
   boardThickness: number; // mm
   backThickness: number; // mm
   plinthHeight: number; // mm
+  plinthSetbackMm: number; // mm (kickboard setback from cabinet front)
   shelfCount: number; // compartments
   shelfThickness: number; // mm
   shelfAutoFit: boolean;
   shelfGaps: number[]; // mm (count = shelfCount)
   doorDouble: boolean; // false = only one face has door, true = both faces have doors
   doorOpen: boolean;
+  // Hinge side (which edge is hinged) on each face:
+  // - Z face spans along X => "left/right" makes sense
+  // - X face spans along Z => still use "left/right" (mapped to start/end Z in geometry)
+  hingeSideFrontZ: "left" | "right";
+  hingeSideFrontX: "left" | "right";
   hingeCountPerDoor: number; // 2 or 3
+  hingeTopOffsetMm: number; // mm from top edge of door to top hinge center
+  hingeBottomOffsetMm: number; // mm from bottom edge of door to bottom hinge center
   materials: MaterialParams;
 };
 
@@ -500,6 +528,18 @@ export function makeDefaultShelvesParams(): ShelvesParams {
     boardThickness: 18,
     backThickness: 8,
     plinthHeight: 100,
+    plinthSetbackMm: 60,
+    wallMounted: false,
+    frontGap: 2,
+    sideGap: 2,
+    topGap: 2,
+    bottomGap: 2,
+    frontThicknessMm: 19,
+    handleType: "none",
+    handlePositionMm: 60,
+    handleLengthMm: 160,
+    handleSizeMm: 12,
+    handleProjectionMm: 14,
     shelfCount: 4,
     shelfThickness: 18,
     shelfAutoFit: true,
@@ -507,9 +547,12 @@ export function makeDefaultShelvesParams(): ShelvesParams {
     doorDouble: true,
     doorOpen: false,
     hingeCountPerDoor: 3,
+    hingeSide: "left",
+    hingeTopOffsetMm: 110,
+    hingeBottomOffsetMm: 110,
     materials: {
       bodyKey: "carcass_default",
-      frontKey: "front_unused",
+      frontKey: "front_default",
       drawerKey: "drawer_unused",
       bodyColor: "#b8bcc7",
       frontColor: "#3a7bd5",
@@ -531,6 +574,7 @@ export function makeDefaultCornerShelfLowerParams(): CornerShelfLowerParams {
     boardThickness: 18,
     backThickness: 8,
     plinthHeight: 100,
+    plinthSetbackMm: 60,
     shelfCount: 4,
     shelfThickness: 18,
     shelfAutoFit: true,
@@ -538,6 +582,10 @@ export function makeDefaultCornerShelfLowerParams(): CornerShelfLowerParams {
     doorDouble: true,
     doorOpen: false,
     hingeCountPerDoor: 3,
+    hingeSideFrontZ: "right",
+    hingeSideFrontX: "right",
+    hingeTopOffsetMm: 110,
+    hingeBottomOffsetMm: 110,
     materials: {
       bodyKey: "carcass_default",
       frontKey: "front_default",
@@ -871,6 +919,41 @@ export function validateModule(p: ModuleParams): string[] {
   return ["Unknown module type."];
 }
 
+export function normalizeModuleParams(p: ModuleParams): ModuleParams {
+  if (p.type === "shelves") {
+    const base = makeDefaultShelvesParams();
+    const next: ShelvesParams = {
+      ...base,
+      ...(p as any),
+      materials: { ...base.materials, ...((p as any).materials ?? {}) }
+    };
+    if (!Array.isArray(next.shelfGaps)) next.shelfGaps = [];
+    // Ensure required keys exist (backward compatible with older saved JSON)
+    if (typeof next.wallMounted !== "boolean") next.wallMounted = base.wallMounted;
+    if (next.hingeSide !== "left" && next.hingeSide !== "right") next.hingeSide = base.hingeSide;
+    if (next.handleType !== "none" && next.handleType !== "bar" && next.handleType !== "knob" && next.handleType !== "cup" && next.handleType !== "gola") {
+      next.handleType = base.handleType;
+    }
+    return next;
+  }
+
+  if (p.type === "corner_shelf_lower") {
+    const base = makeDefaultCornerShelfLowerParams();
+    const next: CornerShelfLowerParams = {
+      ...base,
+      ...(p as any),
+      materials: { ...base.materials, ...((p as any).materials ?? {}) }
+    };
+    if (!Array.isArray(next.shelfGaps)) next.shelfGaps = [];
+    if (next.hingeSideFrontZ !== "left" && next.hingeSideFrontZ !== "right") next.hingeSideFrontZ = base.hingeSideFrontZ;
+    if (next.hingeSideFrontX !== "left" && next.hingeSideFrontX !== "right") next.hingeSideFrontX = base.hingeSideFrontX;
+    return next;
+  }
+
+  // Other modules unchanged for now
+  return p;
+}
+
 export function validateDrawerLow(p: DrawerLowParams): string[] {
   const errors: string[] = [];
 
@@ -1029,10 +1112,30 @@ export function validateShelves(p: ShelvesParams): string[] {
   positiveNumber(errors, "boardThickness", p.boardThickness, 5);
   positiveNumber(errors, "backThickness", p.backThickness, 3);
   positiveNumber(errors, "plinthHeight", p.plinthHeight, 0);
+  positiveNumber(errors, "plinthSetbackMm", p.plinthSetbackMm, 0);
+  positiveNumber(errors, "frontGap", p.frontGap, 0);
+  positiveNumber(errors, "sideGap", p.sideGap, 0);
+  positiveNumber(errors, "topGap", p.topGap, 0);
+  positiveNumber(errors, "bottomGap", p.bottomGap, 0);
+  positiveNumber(errors, "frontThicknessMm", p.frontThicknessMm, 5);
+  positiveNumber(errors, "handlePositionMm", p.handlePositionMm, 0);
+  positiveNumber(errors, "handleLengthMm", p.handleLengthMm, 0);
+  positiveNumber(errors, "handleSizeMm", p.handleSizeMm, 0);
+  positiveNumber(errors, "handleProjectionMm", p.handleProjectionMm, 0);
   positiveNumber(errors, "shelfThickness", p.shelfThickness, 5);
-  if (!Number.isInteger(p.hingeCountPerDoor) || (p.hingeCountPerDoor !== 2 && p.hingeCountPerDoor !== 3)) {
-    errors.push("hingeCountPerDoor must be 2 or 3.");
+  positiveNumber(errors, "hingeTopOffsetMm", p.hingeTopOffsetMm, 0);
+  positiveNumber(errors, "hingeBottomOffsetMm", p.hingeBottomOffsetMm, 0);
+
+  const hingeCount = typeof p.hingeCountPerDoor === "number" ? p.hingeCountPerDoor : Number(p.hingeCountPerDoor);
+  if (!Number.isFinite(hingeCount) || !Number.isInteger(hingeCount) || hingeCount < 1 || hingeCount > 6) {
+    errors.push("hingeCountPerDoor must be an integer 1..6.");
   }
+
+  if (p.hingeSide !== "left" && p.hingeSide !== "right") errors.push('hingeSide must be "left" or "right".');
+
+  const validHandle =
+    p.handleType === "none" || p.handleType === "bar" || p.handleType === "knob" || p.handleType === "cup" || p.handleType === "gola";
+  if (!validHandle) errors.push("handleType must be one of: none, bar, knob, cup, gola.");
 
   if (!Number.isInteger(p.shelfCount) || p.shelfCount < 1 || p.shelfCount > 11) {
     errors.push("shelfCount must be an integer between 1 and 11.");
@@ -1067,6 +1170,7 @@ export function validateShelves(p: ShelvesParams): string[] {
   }
 
   if (p.backThickness >= p.depth) errors.push("backThickness must be smaller than depth.");
+  if (p.plinthSetbackMm > p.depth) errors.push("plinthSetbackMm must be <= depth.");
   validateMaterials(errors, p.materials);
   return errors;
 }
@@ -1141,14 +1245,22 @@ export function validateCornerShelfLower(p: CornerShelfLowerParams): string[] {
   positiveNumber(errors, "boardThickness", p.boardThickness, 5);
   positiveNumber(errors, "backThickness", p.backThickness, 3);
   positiveNumber(errors, "plinthHeight", p.plinthHeight, 0);
+  positiveNumber(errors, "plinthSetbackMm", p.plinthSetbackMm, 0);
   positiveNumber(errors, "shelfThickness", p.shelfThickness, 5);
+  positiveNumber(errors, "hingeTopOffsetMm", p.hingeTopOffsetMm, 0);
+  positiveNumber(errors, "hingeBottomOffsetMm", p.hingeBottomOffsetMm, 0);
 
-  if (!Number.isInteger(p.hingeCountPerDoor) || (p.hingeCountPerDoor !== 2 && p.hingeCountPerDoor !== 3)) {
-    errors.push("hingeCountPerDoor must be 2 or 3.");
+  const hingeCount = typeof p.hingeCountPerDoor === "number" ? p.hingeCountPerDoor : Number(p.hingeCountPerDoor);
+  if (!Number.isFinite(hingeCount) || !Number.isInteger(hingeCount) || hingeCount < 1 || hingeCount > 6) {
+    errors.push("hingeCountPerDoor must be an integer 1..6.");
   }
+
+  if (p.hingeSideFrontZ !== "left" && p.hingeSideFrontZ !== "right") errors.push('hingeSideFrontZ must be "left" or "right".');
+  if (p.hingeSideFrontX !== "left" && p.hingeSideFrontX !== "right") errors.push('hingeSideFrontX must be "left" or "right".');
 
   if (p.shelfThickness > p.boardThickness) errors.push("shelfThickness should be <= boardThickness.");
   if (p.backThickness >= p.depth) errors.push("backThickness must be smaller than depth.");
+  if (p.plinthSetbackMm > p.depth) errors.push("plinthSetbackMm must be <= depth.");
 
   validateShelfLayout(errors, p);
   validateMaterials(errors, p.materials);
