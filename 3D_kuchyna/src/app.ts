@@ -137,6 +137,8 @@ export function startApp(args: AppArgs) {
   wallPlanGroup.add(wallDebugGroup);
   let wallDebugEnabled = false;
   const wallSolvedOutlines = new Map<string, Array<{ x: number; z: number }>>();
+  let wallSolvedJoinPolys: Array<Array<{ x: number; z: number }>> = [];
+  let wallUnionPolys: any | null = null;
 
   const wallSnapMarkers = new THREE.Group();
   wallSnapMarkers.name = "wallSnapMarkers";
@@ -1190,9 +1192,19 @@ export function startApp(args: AppArgs) {
       if (!inst) continue;
       const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
       const overlaps = anyOverlapIgnoring(inst, ignore);
-      if (!inRoom || overlaps) {
+      if (!inRoom || overlaps || moduleOverlapsWalls(inst)) {
         ok = false;
         break;
+      }
+    }
+
+    // Also block moving walls into any existing module.
+    if (ok) {
+      for (const inst of instances) {
+        if (moduleOverlapsWalls(inst)) {
+          ok = false;
+          break;
+        }
       }
     }
 
@@ -1291,9 +1303,19 @@ export function startApp(args: AppArgs) {
       if (!inst) continue;
       const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
       const overlaps = anyOverlapIgnoring(inst, ignore);
-      if (!inRoom || overlaps) {
+      if (!inRoom || overlaps || moduleOverlapsWalls(inst)) {
         ok = false;
         break;
+      }
+    }
+
+    // Also block rotating walls into any existing module.
+    if (ok) {
+      for (const inst of instances) {
+        if (moduleOverlapsWalls(inst)) {
+          ok = false;
+          break;
+        }
       }
     }
 
@@ -1477,6 +1499,9 @@ export function startApp(args: AppArgs) {
   };
 
   const translateWallAndConnected = (w: WallInstance, dxMm: number, dzMm: number) => {
+    const prev = new Map<string, WallParams>();
+    for (const ww of walls) prev.set(ww.id, JSON.parse(JSON.stringify(ww.params)) as WallParams);
+
     const oldA = { x: w.params.aMm.x, z: w.params.aMm.z };
     const oldB = { x: w.params.bMm.x, z: w.params.bMm.z };
 
@@ -1508,9 +1533,22 @@ export function startApp(args: AppArgs) {
       if (ww) rebuildWall(ww);
     }
     rebuildWallPlanMesh();
+
+    if (instances.some((i) => moduleOverlapsWalls(i))) {
+      for (const ww of walls) {
+        const p = prev.get(ww.id);
+        if (p) ww.params = JSON.parse(JSON.stringify(p)) as WallParams;
+        rebuildWall(ww);
+      }
+      rebuildWallPlanMesh();
+      setUnderlayStatus("Move blocked: wall would overlap a module.");
+    }
   };
 
   const moveWallEndpointAndConnected = (w: WallInstance, which: "a" | "b", dxMm: number, dzMm: number) => {
+    const prev = new Map<string, WallParams>();
+    for (const ww of walls) prev.set(ww.id, JSON.parse(JSON.stringify(ww.params)) as WallParams);
+
     const oldP = which === "a" ? { x: w.params.aMm.x, z: w.params.aMm.z } : { x: w.params.bMm.x, z: w.params.bMm.z };
     const nextP = { x: oldP.x + dxMm, z: oldP.z + dzMm };
 
@@ -1535,6 +1573,16 @@ export function startApp(args: AppArgs) {
       if (ww) rebuildWall(ww);
     }
     rebuildWallPlanMesh();
+
+    if (instances.some((i) => moduleOverlapsWalls(i))) {
+      for (const ww of walls) {
+        const p = prev.get(ww.id);
+        if (p) ww.params = JSON.parse(JSON.stringify(p)) as WallParams;
+        rebuildWall(ww);
+      }
+      rebuildWallPlanMesh();
+      setUnderlayStatus("Move blocked: wall would overlap a module.");
+    }
   };
 
   function snapAxisXZ(a: THREE.Vector3, b: THREE.Vector3, enabled: boolean) {
@@ -1665,9 +1713,18 @@ export function startApp(args: AppArgs) {
 
     removeWall(w);
     const w1 = addWall(a, mid, thickness);
-    w1.params.materialId = materialId;
     const w2 = addWall(mid, b, thickness);
-    w2.params.materialId = materialId;
+    if (!w1 || !w2) {
+      // rollback best-effort to keep the original wall
+      if (w1) removeWall(w1);
+      if (w2) removeWall(w2);
+      const w0 = addWall(a, b, thickness);
+      if (w0) w0.params.materialId = materialId;
+      rebuildWallPlanMesh();
+      return;
+    }
+    if (w1) w1.params.materialId = materialId;
+    if (w2) w2.params.materialId = materialId;
     rebuildWallPlanMesh();
   }
 
@@ -1984,6 +2041,8 @@ export function startApp(args: AppArgs) {
 
     const solved = solveWallNetwork(modelWalls, { nodeTolM: wallJoinTolMm / 1000, miterLimit: 8 });
     wallSolvedOutlines.clear();
+    wallSolvedJoinPolys = solved.joinPolys.map((p) => p.map((q) => ({ x: q.x, z: q.z })));
+    wallUnionPolys = null;
 
     const makePolyMesh = (poly: Array<{ x: number; z: number }>, y: number, name: string) => {
       if (poly.length < 3) return null;
@@ -2033,6 +2092,7 @@ export function startApp(args: AppArgs) {
     }
 
     if (merged && merged.length > 0) {
+      wallUnionPolys = merged;
       const shapes: THREE.Shape[] = [];
       for (const poly of merged as any[]) {
         const rings = poly as any[];
@@ -2224,7 +2284,7 @@ export function startApp(args: AppArgs) {
     updateWallMesh(w.mesh, aExt, bExt, w.params.thicknessMm);
   }
 
-  function addWall(a: THREE.Vector3, b: THREE.Vector3, thicknessMm: number) {
+  function addWall(a: THREE.Vector3, b: THREE.Vector3, thicknessMm: number): WallInstance | null {
     const id = `w${wallCounter++}`;
     const root = new THREE.Group();
     root.name = `wall_${id}`;
@@ -2251,6 +2311,19 @@ export function startApp(args: AppArgs) {
     walls.push(inst);
     rebuildWall(inst);
     rebuildWallPlanMesh();
+
+    // Disallow walls intersecting any module (prevents module↔wall overlap states).
+    if (instances.some((i) => moduleOverlapsWalls(i))) {
+      // rollback
+      layoutRoot.remove(root);
+      disposeObject3D(root);
+      const idx = walls.findIndex((w) => w.id === id);
+      if (idx >= 0) walls.splice(idx, 1);
+      rebuildWallPlanMesh();
+      setUnderlayStatus("Wall blocked: would overlap a module.");
+      return null;
+    }
+
     commitHistory();
     return inst;
   }
@@ -2573,6 +2646,8 @@ export function startApp(args: AppArgs) {
         const dzMm = Math.round(dzM * 1000);
 
         let moved = false;
+        const prevWalls = new Map<string, WallParams>();
+        for (const w of walls) prevWalls.set(w.id, JSON.parse(JSON.stringify(w.params)) as WallParams);
 
         // Walls (single or multi)
         const wallIds = selectedWallIds.size > 0 ? Array.from(selectedWallIds) : selectedKind === "wall" && selectedWallId ? [selectedWallId] : [];
@@ -2637,7 +2712,7 @@ export function startApp(args: AppArgs) {
             const desired = new THREE.Vector3(inst.root.position.x + dxMm / 1000, 0, inst.root.position.z + dzMm / 1000);
             const desiredInRoom = applyWallConstraints(inst, desired);
             inst.root.position.copy(desiredInRoom);
-            if (anyOverlap(inst, null)) {
+            if (anyOverlap(inst, null) || moduleOverlapsWalls(inst)) {
               inst.root.position.copy(prev);
             } else {
               autoOrientModuleToRoomWallIfSnapped(inst);
@@ -2645,6 +2720,21 @@ export function startApp(args: AppArgs) {
             }
           }
           if (moved) updateLayoutPanel();
+        }
+
+        // Never allow module↔wall overlap (also blocks walls moving into existing modules).
+        if (instances.some((i) => moduleOverlapsWalls(i))) {
+          for (const w of walls) {
+            const p = prevWalls.get(w.id);
+            if (p) w.params = JSON.parse(JSON.stringify(p)) as WallParams;
+            rebuildWall(w);
+          }
+          rebuildWallPlanMesh();
+          // best-effort: if a module nudge happened, it already reverted per-module on overlap;
+          // so restoring walls is enough to eliminate illegal states.
+          updateLayoutPanel();
+          mountProps();
+          return false;
         }
 
         if (moved) {
@@ -2858,6 +2948,10 @@ export function startApp(args: AppArgs) {
             const finalEnd = closes && cs ? cs.clone() : bExact;
 
             const w = addWall(a, finalEnd, wallDefault.thicknessMm);
+            if (!w) {
+              ev.preventDefault();
+              return;
+            }
             autoJoinAtMmPoint(w.params.aMm);
             autoJoinAtMmPoint(w.params.bMm);
             wallDraw.segments += 1;
@@ -4301,7 +4395,7 @@ export function startApp(args: AppArgs) {
       const prevRot = inst.root.rotation.y;
       inst.root.rotation.y = next;
       const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
-      const overlaps = anyOverlap(inst, null);
+      const overlaps = anyOverlap(inst, null) || moduleOverlapsWalls(inst);
       if (!inRoom || overlaps) {
         inst.root.rotation.y = prevRot;
         rot.value = String(Math.round((prevRot * 180) / Math.PI));
@@ -5410,7 +5504,7 @@ export function startApp(args: AppArgs) {
     inst.root.position.copy(clamped);
 
     const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
-    const overlaps = anyOverlap(inst, null);
+    const overlaps = anyOverlap(inst, null) || moduleOverlapsWalls(inst);
     if (!inRoom || overlaps) {
       // Revert (layout must never allow overlaps)
       inst.root.remove(inst.module);
@@ -5421,7 +5515,7 @@ export function startApp(args: AppArgs) {
       inst.root.add(inst.module);
       ensurePickAndOutline(inst);
       renderErrors(args.errorsEl, [
-        !inRoom ? "Module doesn't fit inside the room bounds in layout mode." : "Module would overlap another module in layout mode."
+        !inRoom ? "Module doesn't fit inside the room bounds in layout mode." : overlaps ? "Module overlaps wall/another module in layout mode." : "Module invalid in layout mode."
       ]);
       return;
     }
@@ -5474,7 +5568,7 @@ export function startApp(args: AppArgs) {
           const clamped = applyWallConstraints(inst, desired);
           inst.root.position.copy(clamped);
           if (!roomContainsBoxXZ(instanceWorldBox(inst))) continue;
-          if (!anyOverlap(inst, null)) return;
+          if (!anyOverlap(inst, null) && !moduleOverlapsWalls(inst)) return;
         }
       }
     }
@@ -5510,6 +5604,86 @@ export function startApp(args: AppArgs) {
       if (ignoreIds.has(other.id)) continue;
       const b = instanceWorldBox(other);
       if (aabbOverlapXZ(a, b)) return true;
+    }
+    return false;
+  }
+
+  function polyArea(ring: Array<[number, number]>) {
+    let a = 0;
+    for (let i = 0; i < ring.length - 1; i++) {
+      const [x0, y0] = ring[i];
+      const [x1, y1] = ring[i + 1];
+      a += x0 * y1 - x1 * y0;
+    }
+    return a / 2;
+  }
+
+  function multiPolyArea(mp: any) {
+    if (!mp || !Array.isArray(mp)) return 0;
+    let sum = 0;
+    for (const poly of mp as any[]) {
+      if (!poly || poly.length === 0) continue;
+      const rings = poly as any[];
+      const outer = rings[0] as Array<[number, number]>;
+      if (!outer || outer.length < 4) continue;
+      let a = Math.abs(polyArea(outer));
+      for (let i = 1; i < rings.length; i++) {
+        const hole = rings[i] as Array<[number, number]>;
+        if (!hole || hole.length < 4) continue;
+        a -= Math.abs(polyArea(hole));
+      }
+      sum += Math.max(0, a);
+    }
+    return sum;
+  }
+
+  function moduleWorldRing(inst: LayoutInstance) {
+    inst.root.updateMatrixWorld(true);
+    const b = inst.localBox;
+    const pts = [
+      new THREE.Vector3(b.min.x, 0, b.min.z),
+      new THREE.Vector3(b.max.x, 0, b.min.z),
+      new THREE.Vector3(b.max.x, 0, b.max.z),
+      new THREE.Vector3(b.min.x, 0, b.max.z)
+    ].map((p) => p.applyMatrix4(inst.root.matrixWorld));
+    const ring: Array<[number, number]> = pts.map((p) => [p.x, p.z]);
+    if (ring.length > 0) ring.push(ring[0]);
+    return ring;
+  }
+
+  function moduleOverlapsWalls(inst: LayoutInstance) {
+    if (walls.length === 0) return false;
+    const ring = moduleWorldRing(inst);
+    const moduleMp = [[[ring]]];
+
+    const wallMp = wallUnionPolys;
+    if (wallMp) {
+      try {
+        const inter = (polygonClipping as any).intersection(wallMp, moduleMp);
+        const area = multiPolyArea(inter);
+        return area > 1e-6; // ~1mm^2 in m^2
+      } catch {
+        // fall through
+      }
+    }
+
+    // Fallback: test against individual outlines + join polys (less robust but still blocks wall embedding).
+    const toRing = (poly: Array<{ x: number; z: number }>) => {
+      const r: Array<[number, number]> = poly.map((p) => [p.x, p.z]);
+      if (r.length > 0) r.push(r[0]);
+      return r;
+    };
+    const polys: any[] = [];
+    for (const poly of wallSolvedOutlines.values()) if (poly.length >= 3) polys.push([[[toRing(poly)]]]);
+    for (const poly of wallSolvedJoinPolys) if (poly.length >= 3) polys.push([[[toRing(poly)]]]);
+    for (const wmp of polys) {
+      try {
+        const inter = (polygonClipping as any).intersection(wmp, moduleMp);
+        const area = multiPolyArea(inter);
+        if (area > 1e-6) return true;
+      } catch {
+        // ignore
+      }
     }
     return false;
   }
@@ -5581,7 +5755,7 @@ export function startApp(args: AppArgs) {
       const clamped = applyWallConstraints(moving, c.pos);
       const prev = moving.root.position.clone();
       moving.root.position.copy(clamped);
-      const overlaps = anyOverlap(moving, null);
+      const overlaps = anyOverlap(moving, null) || moduleOverlapsWalls(moving);
       moving.root.position.copy(prev);
       if (overlaps) continue;
       if (c.score < bestScore) {
@@ -5613,7 +5787,7 @@ export function startApp(args: AppArgs) {
     const trySnap = (delta: THREE.Vector3) => {
       const prev = moving.root.position.clone();
       moving.root.position.copy(next.clone().add(delta));
-      const ok = !anyOverlap(moving, null);
+      const ok = !anyOverlap(moving, null) && !moduleOverlapsWalls(moving);
       moving.root.position.copy(prev);
       if (ok) next.add(delta);
     };
@@ -5661,7 +5835,7 @@ export function startApp(args: AppArgs) {
     inst.root.position.copy(applyWallConstraints(inst, inst.root.position.clone()));
     const inRoom = roomContainsBoxXZ(instanceWorldBox(inst));
     const overlaps = ignoreIds ? anyOverlapIgnoring(inst, ignoreIds) : anyOverlap(inst, null);
-    if (!inRoom || overlaps) {
+    if (!inRoom || overlaps || moduleOverlapsWalls(inst)) {
       inst.root.rotation.y = prevRot;
       inst.root.position.copy(prevPos);
       inst.root.updateMatrixWorld(true);
@@ -6380,7 +6554,7 @@ export function startApp(args: AppArgs) {
         if (ev.button !== 0) return;
         const hitPoint = new THREE.Vector3();
         if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
-        const snapped = snapPoint2D(hitPoint, rect, cam());
+        const snapped = snapPoint2D(hitPoint, rect, cam(), 24);
         const p = snapped.kind !== "none" ? snapped.point : hitPoint;
 
         if (transformState.kind === "move") {
@@ -6767,6 +6941,7 @@ export function startApp(args: AppArgs) {
 
         // Finish wall
         const w = addWall(a, end, wallDefault.thicknessMm);
+        if (!w) return;
         autoJoinAtMmPoint(w.params.aMm);
         autoJoinAtMmPoint(w.params.bMm);
         wallDraw.segments += 1;
@@ -7080,6 +7255,26 @@ export function startApp(args: AppArgs) {
           if (ww) rebuildWall(ww);
         }
         rebuildWallPlanMesh();
+
+        // Block moving walls into modules.
+        if (instances.some((i) => moduleOverlapsWalls(i))) {
+          w.params.aMm = { x: d.startA.x, z: d.startA.z };
+          w.params.bMm = { x: d.startB.x, z: d.startB.z };
+          for (const c of d.connectedA) {
+            const ow = walls.find((x) => x.id === c.wallId) ?? null;
+            if (!ow) continue;
+            if (c.which === "a") ow.params.aMm = { x: d.startA.x, z: d.startA.z };
+            else ow.params.bMm = { x: d.startA.x, z: d.startA.z };
+          }
+          for (const c of d.connectedB) {
+            const ow = walls.find((x) => x.id === c.wallId) ?? null;
+            if (!ow) continue;
+            if (c.which === "a") ow.params.aMm = { x: d.startB.x, z: d.startB.z };
+            else ow.params.bMm = { x: d.startB.x, z: d.startB.z };
+          }
+          for (const ww of walls) rebuildWall(ww);
+          rebuildWallPlanMesh();
+        }
         return;
       }
 
@@ -7109,6 +7304,22 @@ export function startApp(args: AppArgs) {
         if (ww) rebuildWall(ww);
       }
       rebuildWallPlanMesh();
+
+      // Block moving walls into modules.
+      if (instances.some((i) => moduleOverlapsWalls(i))) {
+        // Restore endpoints from drag start snapshot.
+        if (which === "a") w.params.aMm = { x: d.startA.x, z: d.startA.z };
+        else w.params.bMm = { x: d.startB.x, z: d.startB.z };
+        for (const c of connected) {
+          const ow = walls.find((x) => x.id === c.wallId) ?? null;
+          if (!ow) continue;
+          const src = which === "a" ? d.startA : d.startB;
+          if (c.which === "a") ow.params.aMm = { x: src.x, z: src.z };
+          else ow.params.bMm = { x: src.x, z: src.z };
+        }
+        for (const ww of walls) rebuildWall(ww);
+        rebuildWallPlanMesh();
+      }
       return;
     }
 
@@ -7124,7 +7335,7 @@ export function startApp(args: AppArgs) {
       const hitPoint = new THREE.Vector3();
       if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
 
-      const snapped = snapPoint2D(hitPoint, rect, cam());
+      const snapped = snapPoint2D(hitPoint, rect, cam(), 24);
       const p = snapped.kind !== "none" ? snapped.point : hitPoint;
       if (snapped.kind !== "none") {
         const s = worldToScreen(p, cam(), rect);
@@ -7154,6 +7365,26 @@ export function startApp(args: AppArgs) {
         applyRotateAngle(d);
         setUnderlayStatus(`Rotate: ${Math.round((d * 180) / Math.PI)}° (click to finish)`);
         return;
+      }
+    }
+
+    // Wall join polys (miter/corner fills): needed so you can snap to true join corners.
+    for (const poly of wallSolvedJoinPolys) {
+      if (poly.length < 2) continue;
+      for (const p of poly) candidates.push({ p: new THREE.Vector3(p.x, 0, p.z), kind: "corner" });
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i];
+        const b = poly[(i + 1) % poly.length];
+        const ax = a.x, az = a.z;
+        const bx = b.x, bz = b.z;
+        const vx = bx - ax;
+        const vz = bz - az;
+        const l2 = vx * vx + vz * vz;
+        if (l2 < 1e-12) continue;
+        const rx = raw.x - ax;
+        const rz = raw.z - az;
+        const t = Math.max(0, Math.min(1, (rx * vx + rz * vz) / l2));
+        candidates.push({ p: new THREE.Vector3(ax + vx * t, 0, az + vz * t), kind: "edge" });
       }
     }
 
@@ -7492,7 +7723,7 @@ export function startApp(args: AppArgs) {
 
       inst.root.position.copy(finalPos);
       autoOrientModuleToRoomWallIfSnapped(inst);
-      if (anyOverlap(inst, null)) {
+      if (anyOverlap(inst, null) || moduleOverlapsWalls(inst)) {
         inst.root.position.copy(dragState.lastValid);
       } else {
         dragState.lastValid.copy(inst.root.position);
