@@ -522,26 +522,26 @@ export function startApp(args: AppArgs) {
     params: DimensionParams;
     root: THREE.Group;
     pick: THREE.Mesh;
-    ext1: THREE.Line;
-    ext2: THREE.Line;
-    dim: THREE.Line;
-    tick1: THREE.Line;
-    tick2: THREE.Line;
+    ext1: THREE.Mesh;
+    ext2: THREE.Mesh;
+    dim: THREE.Mesh;
+    tick1: THREE.Mesh;
+    tick2: THREE.Mesh;
     text: THREE.Sprite;
   };
 
   const dimensions: DimensionInstance[] = [];
   let dimensionCounter = 1;
 
-  const dimMat = new THREE.LineBasicMaterial({ color: 0x5c8cff, transparent: true, opacity: 0.95, depthTest: false });
-  const dimMatSelected = new THREE.LineBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 1, depthTest: false });
+  const dimMat = new THREE.MeshBasicMaterial({ color: 0x0b0f18, transparent: true, opacity: 1, depthTest: false, depthWrite: false });
+  const dimMatSelected = new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 1, depthTest: false, depthWrite: false });
   const dimPickMat = new THREE.MeshBasicMaterial({ visible: false });
 
-  const makeTextSprite = (text: string) => {
+  const makeDimTextSprite = (text: string) => {
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("Canvas 2D not available");
-    const pad = 10;
+    const pad = 2;
     const fontPx = 28;
     ctx.font = `${fontPx}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial`;
     const metrics = ctx.measureText(text);
@@ -555,24 +555,7 @@ export function startApp(args: AppArgs) {
     ctx2.font = `${fontPx}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial`;
     ctx2.textBaseline = "middle";
     ctx2.textAlign = "center";
-    ctx2.fillStyle = "rgba(10, 14, 20, 0.85)";
-    const r = 10;
-    ctx2.beginPath();
-    ctx2.moveTo(r, 0);
-    ctx2.lineTo(w - r, 0);
-    ctx2.quadraticCurveTo(w, 0, w, r);
-    ctx2.lineTo(w, h - r);
-    ctx2.quadraticCurveTo(w, h, w - r, h);
-    ctx2.lineTo(r, h);
-    ctx2.quadraticCurveTo(0, h, 0, h - r);
-    ctx2.lineTo(0, r);
-    ctx2.quadraticCurveTo(0, 0, r, 0);
-    ctx2.closePath();
-    ctx2.fill();
-    ctx2.strokeStyle = "rgba(92, 140, 255, 0.9)";
-    ctx2.lineWidth = 2;
-    ctx2.stroke();
-    ctx2.fillStyle = "rgba(255,255,255,0.96)";
+    ctx2.fillStyle = "rgba(0,0,0,0.92)";
     ctx2.fillText(text, w / 2, h / 2 + 1);
 
     const tex = new THREE.CanvasTexture(canvas);
@@ -582,6 +565,8 @@ export function startApp(args: AppArgs) {
     const spr = new THREE.Sprite(mat);
     spr.renderOrder = 90;
     spr.position.y = 0.055;
+    (spr.userData as any).wPx = w;
+    (spr.userData as any).hPx = h;
     return spr;
   };
 
@@ -590,12 +575,37 @@ export function startApp(args: AppArgs) {
     (spr.userData as any).text = text;
     const mat = spr.material as THREE.SpriteMaterial;
     const old = mat.map as THREE.Texture | null;
-    const next = makeTextSprite(text);
+    const next = makeDimTextSprite(text);
     const nextMat = next.material as THREE.SpriteMaterial;
     mat.map = nextMat.map;
     mat.needsUpdate = true;
     nextMat.dispose();
+    (spr.userData as any).wPx = (next.userData as any).wPx;
+    (spr.userData as any).hPx = (next.userData as any).hPx;
     if (old) old.dispose();
+  };
+
+  const makeDimBarMesh = (mat: THREE.Material) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(1, 0.01, 0.01), mat);
+    m.renderOrder = 75;
+    m.position.y = 0.05;
+    return m;
+  };
+
+  const updateDimBar = (mesh: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3, thicknessM: number) => {
+    const d = b.clone().sub(a);
+    const len = d.length();
+    if (len < 1e-6) {
+      mesh.visible = false;
+      return;
+    }
+    const ang = Math.atan2(d.z, d.x);
+    const mid = a.clone().addScaledVector(d, 0.5);
+    mesh.geometry.dispose();
+    mesh.geometry = new THREE.BoxGeometry(len, 0.01, thicknessM);
+    mesh.position.set(mid.x, 0.05, mid.z);
+    mesh.rotation.set(0, ang, 0);
+    mesh.visible = true;
   };
 
   const wallLineSegment = (wallId: string, wallLine: AlignWallLine) => {
@@ -655,44 +665,42 @@ export function startApp(args: AppArgs) {
     const aDim = aPt.clone().addScaledVector(n, off);
     const bDim = bPt.clone().addScaledVector(n, off);
 
-    const setLinePts = (line: THREE.Line, pts: THREE.Vector3[]) => {
-      const g = new THREE.BufferGeometry().setFromPoints(pts);
-      line.geometry.dispose();
-      line.geometry = g;
-    };
-
-    setLinePts(d.ext1, [aPt.clone().setY(0.05), aDim.clone().setY(0.05)]);
-    setLinePts(d.ext2, [bPt.clone().setY(0.05), bDim.clone().setY(0.05)]);
-    setLinePts(d.dim, [aDim.clone().setY(0.05), bDim.clone().setY(0.05)]);
+    const thick = rect ? hudLineThicknessM(rect) * 1.2 : 0.01;
+    updateDimBar(d.ext1, aPt, aDim, thick);
+    updateDimBar(d.ext2, bPt, bDim, thick);
+    updateDimBar(d.dim, aDim, bDim, thick);
 
     const dimDir = bDim.clone().sub(aDim);
     const len = dimDir.length();
-    const tick = Math.min(0.12, Math.max(0.03, (rect ? hudLineThicknessM(rect) : 0.02) * 10));
-    const dimN = len > 1e-6 ? new THREE.Vector3(-dimDir.z, 0, dimDir.x).normalize() : new THREE.Vector3(0, 0, 1);
-    const t1a = aDim.clone().addScaledVector(dimN, tick / 2);
-    const t1b = aDim.clone().addScaledVector(dimN, -tick / 2);
-    const t2a = bDim.clone().addScaledVector(dimN, tick / 2);
-    const t2b = bDim.clone().addScaledVector(dimN, -tick / 2);
-    setLinePts(d.tick1, [t1a.clone().setY(0.05), t1b.clone().setY(0.05)]);
-    setLinePts(d.tick2, [t2a.clone().setY(0.05), t2b.clone().setY(0.05)]);
+    const u = len > 1e-6 ? dimDir.clone().multiplyScalar(1 / len) : new THREE.Vector3(1, 0, 0);
+    const tickDir = u.clone().add(n.clone().normalize()).normalize(); // diagonal slash like in the reference
+    const tickLen = rect ? Math.max(thick * 8, thick * 10) : 0.08;
+    const t1a = aDim.clone().addScaledVector(tickDir, tickLen / 2);
+    const t1b = aDim.clone().addScaledVector(tickDir, -tickLen / 2);
+    const t2a = bDim.clone().addScaledVector(tickDir, tickLen / 2);
+    const t2b = bDim.clone().addScaledVector(tickDir, -tickLen / 2);
+    updateDimBar(d.tick1, t1a, t1b, thick);
+    updateDimBar(d.tick2, t2a, t2b, thick);
 
     const mid = aDim.clone().add(bDim).multiplyScalar(0.5);
     d.text.position.set(mid.x, 0.06, mid.z);
     const mm = Math.round(Math.abs(n.dot(bPt.clone().sub(aPt))) * 1000);
-    updateSpriteText(d.text, `${mm} mm`);
+    updateSpriteText(d.text, `${mm}`);
 
-    // keep text readable: scale based on zoom (ortho)
     if (rect) {
-      const thick = hudLineThicknessM(rect);
-      d.text.scale.set(thick * 40, thick * 20, 1);
-    } else {
-      d.text.scale.set(0.4, 0.2, 1);
+      const c = cam();
+      if (c instanceof THREE.OrthographicCamera) {
+        const visibleW = Math.abs(c.right - c.left) / Math.max(1e-6, c.zoom);
+        const worldPerPx = visibleW / Math.max(1, rect.width);
+        const wPx = Number((d.text.userData as any).wPx ?? 60);
+        const hPx = Number((d.text.userData as any).hPx ?? 28);
+        d.text.scale.set(worldPerPx * wPx, worldPerPx * hPx, 1);
+      }
     }
 
-    // pick mesh follows dimension line
     const angle = Math.atan2(bDim.z - aDim.z, bDim.x - aDim.x);
     const pickLen = Math.max(0.01, aDim.distanceTo(bDim));
-    const pickThick = Math.max(0.05, rect ? hudLineThicknessM(rect) * 10 : 0.08);
+    const pickThick = Math.max(0.05, rect ? thick * 10 : 0.08);
     d.pick.geometry.dispose();
     d.pick.geometry = new THREE.BoxGeometry(pickLen, 0.04, pickThick);
     d.pick.position.set(mid.x, 0.05, mid.z);
@@ -723,13 +731,12 @@ export function startApp(args: AppArgs) {
     const root = new THREE.Group();
     root.name = `dimension_${id}`;
 
-    const mkLine = () => new THREE.Line(new THREE.BufferGeometry(), dimMat);
-    const ext1 = mkLine();
-    const ext2 = mkLine();
-    const dim = mkLine();
-    const tick1 = mkLine();
-    const tick2 = mkLine();
-    const text = makeTextSprite("0 mm");
+    const ext1 = makeDimBarMesh(dimMat);
+    const ext2 = makeDimBarMesh(dimMat);
+    const dim = makeDimBarMesh(dimMat);
+    const tick1 = makeDimBarMesh(dimMat);
+    const tick2 = makeDimBarMesh(dimMat);
+    const text = makeDimTextSprite("0");
 
     const pick = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.04, 0.08), dimPickMat);
     pick.userData.kind = "dimension";
@@ -744,13 +751,25 @@ export function startApp(args: AppArgs) {
     return inst;
   };
 
+  const disposeDimensionInstance = (d: DimensionInstance) => {
+    const meshes = [d.pick, d.ext1, d.ext2, d.dim, d.tick1, d.tick2];
+    for (const m of meshes) {
+      if (m.geometry) m.geometry.dispose();
+      // Do NOT dispose materials (shared)
+    }
+    const sm = d.text.material as THREE.SpriteMaterial;
+    const tex = sm.map as THREE.Texture | null;
+    if (tex) tex.dispose();
+    sm.dispose();
+  };
+
   const deleteDimension = (id: string, opts?: { skipHistory?: boolean }) => {
     const idx = dimensions.findIndex((x) => x.id === id);
     if (idx < 0) return;
     const d = dimensions[idx];
     dimensions.splice(idx, 1);
     layoutRoot.remove(d.root);
-    disposeObject3D(d.root);
+    disposeDimensionInstance(d);
     if (selectedDimensionId === id) setSelectedDimension(null);
     if (!opts?.skipHistory) commitHistory();
   };
@@ -832,7 +851,7 @@ export function startApp(args: AppArgs) {
     // Clear dimensions
     for (const d of dimensions.splice(0, dimensions.length)) {
       layoutRoot.remove(d.root);
-      disposeObject3D(d.root);
+      disposeDimensionInstance(d);
     }
 
     // Clear wall roots
@@ -984,14 +1003,15 @@ export function startApp(args: AppArgs) {
     offsetM: 0.2
   };
 
+  const dimPreviewMat = new THREE.MeshBasicMaterial({ color: 0x0b0f18, transparent: true, opacity: 0.35, depthTest: false, depthWrite: false });
   const dimPreview = {
     root: new THREE.Group(),
-    ext1: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
-    ext2: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
-    dim: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
-    tick1: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
-    tick2: new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.9, depthTest: false })),
-    text: makeTextSprite("... mm")
+    ext1: makeDimBarMesh(dimPreviewMat),
+    ext2: makeDimBarMesh(dimPreviewMat),
+    dim: makeDimBarMesh(dimPreviewMat),
+    tick1: makeDimBarMesh(dimPreviewMat),
+    tick2: makeDimBarMesh(dimPreviewMat),
+    text: makeDimTextSprite("...")
   };
   dimPreview.root.name = "dimPreview";
   dimPreview.root.visible = false;
@@ -6484,32 +6504,35 @@ export function startApp(args: AppArgs) {
             const aDim = aPt.clone().addScaledVector(n, off);
             const bDim = bPt.clone().addScaledVector(n, off);
 
-            const setPts = (l: THREE.Line, pts: THREE.Vector3[]) => {
-              const g = new THREE.BufferGeometry().setFromPoints(pts.map((p) => p.clone().setY(0.05)));
-              l.geometry.dispose();
-              l.geometry = g;
-            };
-
-            setPts(dimPreview.ext1, [aPt, aDim]);
-            setPts(dimPreview.ext2, [bPt, bDim]);
-            setPts(dimPreview.dim, [aDim, bDim]);
+            const thickDim = thick * 1.2;
+            updateDimBar(dimPreview.ext1, aPt, aDim, thickDim);
+            updateDimBar(dimPreview.ext2, bPt, bDim, thickDim);
+            updateDimBar(dimPreview.dim, aDim, bDim, thickDim);
 
             const dimDir = bDim.clone().sub(aDim);
             const len = dimDir.length();
-            const tick = Math.min(0.12, Math.max(0.03, thick * 10));
-            const dimN = len > 1e-6 ? new THREE.Vector3(-dimDir.z, 0, dimDir.x).normalize() : new THREE.Vector3(0, 0, 1);
-            const t1a = aDim.clone().addScaledVector(dimN, tick / 2);
-            const t1b = aDim.clone().addScaledVector(dimN, -tick / 2);
-            const t2a = bDim.clone().addScaledVector(dimN, tick / 2);
-            const t2b = bDim.clone().addScaledVector(dimN, -tick / 2);
-            setPts(dimPreview.tick1, [t1a, t1b]);
-            setPts(dimPreview.tick2, [t2a, t2b]);
+            const u = len > 1e-6 ? dimDir.clone().multiplyScalar(1 / len) : new THREE.Vector3(1, 0, 0);
+            const tickDir = u.clone().add(n.clone().normalize()).normalize();
+            const tickLen = Math.max(thickDim * 10, thickDim * 8);
+            const t1a = aDim.clone().addScaledVector(tickDir, tickLen / 2);
+            const t1b = aDim.clone().addScaledVector(tickDir, -tickLen / 2);
+            const t2a = bDim.clone().addScaledVector(tickDir, tickLen / 2);
+            const t2b = bDim.clone().addScaledVector(tickDir, -tickLen / 2);
+            updateDimBar(dimPreview.tick1, t1a, t1b, thickDim);
+            updateDimBar(dimPreview.tick2, t2a, t2b, thickDim);
 
             const mid = aDim.clone().add(bDim).multiplyScalar(0.5);
             dimPreview.text.position.set(mid.x, 0.06, mid.z);
             const mm = Math.round(Math.abs(n.dot(bPt.clone().sub(aPt))) * 1000);
-            updateSpriteText(dimPreview.text, `${mm} mm`);
-            dimPreview.text.scale.set(thick * 40, thick * 20, 1);
+            updateSpriteText(dimPreview.text, `${mm}`);
+            const c = cam();
+            if (c instanceof THREE.OrthographicCamera) {
+              const visibleW = Math.abs(c.right - c.left) / Math.max(1e-6, c.zoom);
+              const worldPerPx = visibleW / Math.max(1, rect.width);
+              const wPx = Number((dimPreview.text.userData as any).wPx ?? 60);
+              const hPx = Number((dimPreview.text.userData as any).hPx ?? 28);
+              dimPreview.text.scale.set(worldPerPx * wPx, worldPerPx * hPx, 1);
+            }
             dimPreview.root.visible = true;
           } else {
             dimPreview.root.visible = false;
