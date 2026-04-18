@@ -69,7 +69,7 @@ export function startApp(args: AppArgs) {
   let mode: AppMode = "build";
   let viewMode: "3d" | "2d" = "3d";
 
-  type LayoutTool = "select" | "wall" | "align";
+  type LayoutTool = "select" | "wall" | "align" | "trim";
   let layoutTool: LayoutTool = "select";
 
   type RenderMode = "realtime" | "realtime_ssgi" | "photo_pathtrace";
@@ -123,6 +123,60 @@ export function startApp(args: AppArgs) {
   wallSnapMarkers.name = "wallSnapMarkers";
   wallSnapMarkers.visible = false;
   layoutRoot.add(wallSnapMarkers);
+
+  // Tool HUD overlays (Align/Trim) in 2D
+  const toolHud = new THREE.Group();
+  toolHud.name = "toolHud";
+  layoutRoot.add(toolHud);
+
+  const hudMatHover = new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.25, depthTest: false, depthWrite: false });
+  const hudMatPick1 = new THREE.MeshBasicMaterial({ color: 0x00e5ff, transparent: true, opacity: 0.75, depthTest: false, depthWrite: false });
+  const hudMatPick2 = new THREE.MeshBasicMaterial({ color: 0xff4dff, transparent: true, opacity: 0.75, depthTest: false, depthWrite: false });
+
+  const makeHudLineMesh = (mat: THREE.Material) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(1, 0.01, 0.01), mat);
+    m.visible = false;
+    m.position.y = 0.05;
+    m.renderOrder = 80;
+    toolHud.add(m);
+    return m;
+  };
+
+  const hudHoverLine = makeHudLineMesh(hudMatHover);
+  const hudPickLine1 = makeHudLineMesh(hudMatPick1);
+  const hudPickLine2 = makeHudLineMesh(hudMatPick2);
+
+  const clearToolHud = () => {
+    hudHoverLine.visible = false;
+    hudPickLine1.visible = false;
+    hudPickLine2.visible = false;
+  };
+
+  const hudLineThicknessM = (rect: DOMRect) => {
+    const c = cam();
+    if (!(c instanceof THREE.OrthographicCamera)) return 0.01;
+    const visibleW = Math.abs(c.right - c.left) / Math.max(1e-6, c.zoom);
+    const worldPerPx = visibleW / Math.max(1, rect.width);
+    return Math.min(0.06, Math.max(0.004, worldPerPx * 4));
+  };
+
+  const updateHudLine = (mesh: THREE.Mesh, a: THREE.Vector3, b: THREE.Vector3, thicknessM: number) => {
+    const d = b.clone().sub(a);
+    const len = d.length();
+    if (len < 1e-6) {
+      mesh.visible = false;
+      return;
+    }
+
+    const ang = Math.atan2(d.z, d.x);
+    const mid = a.clone().addScaledVector(d, 0.5);
+    const g = new THREE.BoxGeometry(len, 0.01, thicknessM);
+    mesh.geometry.dispose();
+    mesh.geometry = g;
+    mesh.position.set(mid.x, 0.05, mid.z);
+    mesh.rotation.set(0, ang, 0);
+    mesh.visible = true;
+  };
 
   const snapMatCorner = new THREE.MeshBasicMaterial({ color: 0xff4dff, depthWrite: false, transparent: true, opacity: 0.95 });
   const snapMatAxis = new THREE.MeshBasicMaterial({ color: 0x00e5ff, depthWrite: false, transparent: true, opacity: 0.95 });
@@ -461,13 +515,29 @@ export function startApp(args: AppArgs) {
   type AlignPickedLine = {
     p: THREE.Vector3;
     dir: THREE.Vector3;
+    segA: THREE.Vector3;
+    segB: THREE.Vector3;
     label: string;
     wallId: string;
     wallLine: AlignWallLine;
   };
 
   const alignState = {
-    ref: null as AlignPickedLine | null
+    ref: null as AlignPickedLine | null,
+    hover: null as AlignPickedLine | null,
+    lastA: null as AlignPickedLine | null,
+    lastB: null as AlignPickedLine | null,
+    lastUntilMs: 0
+  };
+
+  const trimState = {
+    step: "pickTarget" as "pickTarget" | "pickCutter",
+    targetWallId: null as string | null,
+    targetPick: null as AlignPickedLine | null,
+    hover: null as AlignPickedLine | null,
+    lastTarget: null as AlignPickedLine | null,
+    lastCutter: null as AlignPickedLine | null,
+    lastUntilMs: 0
   };
 
   const distPxPointToSeg = (px: number, py: number, ax: number, ay: number, bx: number, by: number) => {
@@ -526,7 +596,15 @@ export function startApp(args: AppArgs) {
         if (!best || px < best.px) {
           best = {
             px,
-            line: { p: c.p.clone(), dir: c.dir.clone().normalize(), label: c.label, wallId: w.id, wallLine: c.kind }
+            line: {
+              p: c.p.clone(),
+              dir: c.dir.clone().normalize(),
+              segA: c.a.clone(),
+              segB: c.b.clone(),
+              label: c.label,
+              wallId: w.id,
+              wallLine: c.kind
+            }
           };
         }
       }
@@ -547,6 +625,19 @@ export function startApp(args: AppArgs) {
     const n = new THREE.Vector3(-dir.z, 0, dir.x);
     const off = n.dot(moving.p.clone().sub(ref.p));
     return n.multiplyScalar(-off);
+  };
+
+  const lineLineIntersectionXZ = (p1: THREE.Vector3, d1: THREE.Vector3, p2: THREE.Vector3, d2: THREE.Vector3) => {
+    const a1x = d1.x;
+    const a1z = d1.z;
+    const a2x = d2.x;
+    const a2z = d2.z;
+    const denom = a1x * a2z - a1z * a2x;
+    if (Math.abs(denom) < 1e-9) return null as THREE.Vector3 | null;
+    const dx = p2.x - p1.x;
+    const dz = p2.z - p1.z;
+    const t = (dx * a2z - dz * a2x) / denom;
+    return new THREE.Vector3(p1.x + a1x * t, 0, p1.z + a1z * t);
   };
 
   const translateWallAndConnected = (w: WallInstance, dxMm: number, dzMm: number) => {
@@ -1402,6 +1493,7 @@ export function startApp(args: AppArgs) {
   const setToolSelect = () => {
     ensureLayoutMode();
     layoutTool = "select";
+    clearToolHud();
     wallDraw.active = false;
     wallDraw.a = null;
     wallDraw.chainStart = null;
@@ -1420,6 +1512,7 @@ export function startApp(args: AppArgs) {
   const setToolWall = () => {
     ensureLayoutMode();
     layoutTool = "wall";
+    clearToolHud();
     wallDraw.active = false;
     wallDraw.a = null;
     if (wallDraw.preview) {
@@ -1451,6 +1544,7 @@ export function startApp(args: AppArgs) {
   const setToolAlign = () => {
     ensureLayoutMode();
     layoutTool = "align";
+    clearToolHud();
     wallDraw.active = false;
     wallDraw.a = null;
     wallDraw.chainStart = null;
@@ -1466,6 +1560,10 @@ export function startApp(args: AppArgs) {
       wallDraw.preview = null;
     }
     alignState.ref = null;
+    alignState.hover = null;
+    alignState.lastA = null;
+    alignState.lastB = null;
+    alignState.lastUntilMs = 0;
     if (viewMode !== "2d") {
       view2d.checked = true;
       setView2d(true);
@@ -1473,6 +1571,41 @@ export function startApp(args: AppArgs) {
       view2d.checked = true;
     }
     setUnderlayStatus("Align: click reference line...");
+    mountProps();
+  };
+
+  const setToolTrim = () => {
+    ensureLayoutMode();
+    layoutTool = "trim";
+    clearToolHud();
+    wallDraw.active = false;
+    wallDraw.a = null;
+    wallDraw.chainStart = null;
+    wallDraw.segments = 0;
+    wallDraw.hoverB = null;
+    wallDraw.typedMm = "";
+    wallTypedHud.style.display = "none";
+    wallSnapHud.style.display = "none";
+    if (wallDraw.preview) {
+      layoutRoot.remove(wallDraw.preview);
+      wallDraw.preview.geometry.dispose();
+      (wallDraw.preview.material as THREE.Material).dispose();
+      wallDraw.preview = null;
+    }
+    trimState.step = "pickTarget";
+    trimState.targetWallId = null;
+    trimState.targetPick = null;
+    trimState.hover = null;
+    trimState.lastTarget = null;
+    trimState.lastCutter = null;
+    trimState.lastUntilMs = 0;
+    if (viewMode !== "2d") {
+      view2d.checked = true;
+      setView2d(true);
+    } else {
+      view2d.checked = true;
+    }
+    setUnderlayStatus("Trim: click target wall...");
     mountProps();
   };
 
@@ -1613,6 +1746,11 @@ export function startApp(args: AppArgs) {
         ev.preventDefault();
         return;
       }
+      if ((ev.key === "t" || ev.key === "T") && !ev.ctrlKey && !ev.metaKey && !ev.altKey) {
+        setToolTrim();
+        ev.preventDefault();
+        return;
+      }
       if (ev.key === " " || ev.code === "Space") {
         // Mirror wall side (Revit-like): works while drawing + when wall is selected.
         if (layoutTool === "wall") {
@@ -1654,6 +1792,25 @@ export function startApp(args: AppArgs) {
         if (alignState.ref) {
           alignState.ref = null;
           setUnderlayStatus("Align: canceled. Click reference line...");
+        } else {
+          setToolSelect();
+        }
+        ev.preventDefault();
+        return;
+      }
+
+      if (ev.key === "Escape" && layoutTool === "trim") {
+        if (trimState.step !== "pickTarget") {
+          trimState.step = "pickTarget";
+          trimState.targetWallId = null;
+          trimState.targetPick = null;
+          trimState.hover = null;
+          trimState.lastTarget = null;
+          trimState.lastCutter = null;
+          trimState.lastUntilMs = 0;
+          clearToolHud();
+          setUnderlayStatus("Trim: click target wall...");
+          mountProps();
         } else {
           setToolSelect();
         }
@@ -2884,6 +3041,7 @@ export function startApp(args: AppArgs) {
   const I_VIEW = icon("M12 5c5.5 0 9.5 5.5 9.5 7s-4 7-9.5 7S2.5 14.5 2.5 12 6.5 5 12 5zm0 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8z");
   const I_DEBUG = icon("M4 12h16v2H4v-2zm7-8h2v16h-2V4z");
   const I_ALIGN = icon("M4 7h12v2H4V7zm0 8h12v2H4v-2zM18 6l4 3-4 3V6zm0 6l4 3-4 3v-6z");
+  const I_TRIM = icon("M4 7h11v2H4V7zm0 8h8v2H4v-2zM18 5l4 4-2 2-4-4 2-2zm-4 4l4 4-2 2-4-4 2-2z");
 
   const tb = createTopbar(args.ribbonEl);
 
@@ -2996,6 +3154,27 @@ export function startApp(args: AppArgs) {
     s.appendChild(cur);
   };
 
+  const mountTrimToolProps = () => {
+    props.setTitle("Trim");
+    const s = props.section();
+    const hint = document.createElement("div");
+    hint.className = "muted";
+    hint.textContent = "Klikni cieľovú stenu (ktorú chceš skrátiť), potom klikni cutter líniu. Esc = späť.";
+    s.appendChild(hint);
+
+    const step = document.createElement("div");
+    step.className = "muted";
+    step.style.marginTop = "8px";
+    step.textContent = trimState.step === "pickTarget" ? "Step: pick target" : "Step: pick cutter";
+    s.appendChild(step);
+
+    const cur = document.createElement("div");
+    cur.className = "muted";
+    cur.style.marginTop = "6px";
+    cur.textContent = trimState.targetPick ? `Target: ${trimState.targetPick.label}` : "Target: (none)";
+    s.appendChild(cur);
+  };
+
   const mountWallProps = (w: WallInstance) => {
     props.setTitle(`Wall (${w.id})`);
     const s = props.section();
@@ -3078,6 +3257,7 @@ export function startApp(args: AppArgs) {
     if (mode !== "layout") return showNoProps();
     if (layoutTool === "wall") return mountWallToolProps();
     if (layoutTool === "align") return mountAlignToolProps();
+    if (layoutTool === "trim") return mountTrimToolProps();
     if (selectedWallIds.size + selectedInstanceIds.size > 1) {
       args.propertiesEl.innerHTML = "";
       const t = document.createElement("div");
@@ -3134,6 +3314,13 @@ export function startApp(args: AppArgs) {
     iconSvg: I_ALIGN,
     onClick: () => {
       setToolAlign();
+    }
+  });
+  tb.toolButton(gEdit, {
+    title: "Trim",
+    iconSvg: I_TRIM,
+    onClick: () => {
+      setToolTrim();
     }
   });
 
@@ -4727,6 +4914,9 @@ export function startApp(args: AppArgs) {
 
         if (!alignState.ref) {
           alignState.ref = picked;
+          alignState.lastA = null;
+          alignState.lastB = null;
+          alignState.lastUntilMs = 0;
           setUnderlayStatus("Align: click second parallel line...");
           mountProps();
           return;
@@ -4769,8 +4959,127 @@ export function startApp(args: AppArgs) {
           translateWallAndConnected(w, dxMm, dzMm);
         }
 
+        alignState.lastA = ref;
+        alignState.lastB = picked;
+        alignState.lastUntilMs = performance.now() + 2500;
         alignState.ref = null;
         setUnderlayStatus("Align: done. Click reference line...");
+        mountProps();
+        return;
+      }
+
+      if (layoutTool === "trim") {
+        if (viewMode !== "2d") return;
+        if (ev.button !== 0) return;
+
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+
+        const rect2 = renderer.domElement.getBoundingClientRect();
+        const mouse = { x: ev.clientX - rect2.left, y: ev.clientY - rect2.top };
+        const picked = pickAlignLineAt(hitPoint, mouse, rect2);
+        if (!picked) {
+          setUnderlayStatus(trimState.step === "pickTarget" ? "Trim: click target wall line." : "Trim: click cutter line.");
+          return;
+        }
+
+        if (trimState.step === "pickTarget") {
+          trimState.targetWallId = picked.wallId;
+          trimState.targetPick = picked;
+          trimState.step = "pickCutter";
+          trimState.lastTarget = null;
+          trimState.lastCutter = null;
+          trimState.lastUntilMs = 0;
+          setUnderlayStatus("Trim: click cutter line...");
+          mountProps();
+          return;
+        }
+
+        const cutterClick = hitPoint.clone();
+
+        const wallId = trimState.targetWallId;
+        const w = wallId ? (walls.find((x) => x.id === wallId) ?? null) : null;
+        if (!w) {
+          trimState.step = "pickTarget";
+          trimState.targetWallId = null;
+          trimState.targetPick = null;
+          setUnderlayStatus("Trim: target missing. Click target wall...");
+          mountProps();
+          return;
+        }
+        if (pinnedWallIds.has(w.id)) {
+          trimState.step = "pickTarget";
+          trimState.targetWallId = null;
+          trimState.targetPick = null;
+          setUnderlayStatus("Trim: target is pinned.");
+          mountProps();
+          return;
+        }
+
+        const aW = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+        const bW = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+        const ab = bW.clone().sub(aW);
+        const len2 = ab.lengthSq();
+        if (len2 < 1e-10) {
+          setUnderlayStatus("Trim: wall too small.");
+          return;
+        }
+        const dW = ab.clone().normalize();
+        const dC = picked.dir.clone().normalize();
+        const I = lineLineIntersectionXZ(aW, dW, picked.p, dC);
+        if (!I) {
+          setUnderlayStatus("Trim: cutter must not be parallel.");
+          return;
+        }
+
+        const t = I.clone().sub(aW).dot(ab) / len2;
+        if (t < -1e-5 || t > 1 + 1e-5) {
+          setUnderlayStatus("Trim: cutter must cross the wall segment.");
+          return;
+        }
+
+        const nC = new THREE.Vector3(-dC.z, 0, dC.x);
+        const sign = (v: number) => (v > 1e-7 ? 1 : v < -1e-7 ? -1 : 0);
+        let sClick = sign(nC.dot(hitPoint.clone().sub(picked.p)));
+        const sA = sign(nC.dot(aW.clone().sub(picked.p)));
+        const sB = sign(nC.dot(bW.clone().sub(picked.p)));
+        if (sClick === 0) sClick = sA !== 0 ? sA : sB;
+
+        let moveWhich: "a" | "b" = "a";
+        if (sClick !== 0) {
+          if (sA === sClick && sB !== sClick) moveWhich = "a";
+          else if (sB === sClick && sA !== sClick) moveWhich = "b";
+          else {
+            // ambiguous: choose closer endpoint to the click point
+            moveWhich = cutterClick.distanceTo(aW) <= cutterClick.distanceTo(bW) ? "a" : "b";
+          }
+        } else {
+          moveWhich = cutterClick.distanceTo(aW) <= cutterClick.distanceTo(bW) ? "a" : "b";
+        }
+
+        const iMm = toMmPoint(I);
+        const old = moveWhich === "a" ? w.params.aMm : w.params.bMm;
+        const dxMm = iMm.x - old.x;
+        const dzMm = iMm.z - old.z;
+
+        if (dxMm === 0 && dzMm === 0) {
+          setUnderlayStatus("Trim: no change.");
+          trimState.step = "pickTarget";
+          trimState.targetWallId = null;
+          trimState.targetPick = null;
+          mountProps();
+          return;
+        }
+
+        moveWallEndpointAndConnected(w, moveWhich, dxMm, dzMm);
+
+        trimState.lastTarget = trimState.targetPick ?? picked;
+        trimState.lastCutter = picked;
+        trimState.lastUntilMs = performance.now() + 2500;
+        trimState.step = "pickTarget";
+        trimState.targetWallId = null;
+        trimState.targetPick = null;
+        setUnderlayStatus("Trim: done. Click target wall...");
         mountProps();
         return;
       }
@@ -5204,6 +5513,69 @@ export function startApp(args: AppArgs) {
       if (underlayOffZEl) underlayOffZEl.value = String(underlayState.offsetMm.z);
       if (selectedUnderlayBox) (selectedUnderlayBox as any).update?.();
       return;
+    }
+
+    // Align/Trim hover highlight
+    if (mode === "layout" && viewMode === "2d" && (layoutTool === "align" || layoutTool === "trim")) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      const y = -(((ev.clientY - rect.top) / rect.height) * 2 - 1);
+      pointerNdc.set(x, y);
+      raycaster.setFromCamera(pointerNdc, cam());
+      const hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) {
+        clearToolHud();
+      } else {
+        const mouse = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+        const picked = pickAlignLineAt(hitPoint, mouse, rect);
+        const thick = hudLineThicknessM(rect);
+
+        const now = performance.now();
+        if (layoutTool === "align") {
+          alignState.hover = picked;
+          if (picked) updateHudLine(hudHoverLine, picked.segA, picked.segB, thick);
+          else hudHoverLine.visible = false;
+
+          if (alignState.ref) {
+            updateHudLine(hudPickLine1, alignState.ref.segA, alignState.ref.segB, thick);
+            hudPickLine2.visible = false;
+          } else if (alignState.lastA && alignState.lastB && alignState.lastUntilMs > now) {
+            updateHudLine(hudPickLine1, alignState.lastA.segA, alignState.lastA.segB, thick);
+            updateHudLine(hudPickLine2, alignState.lastB.segA, alignState.lastB.segB, thick);
+          } else {
+            alignState.lastA = null;
+            alignState.lastB = null;
+            alignState.lastUntilMs = 0;
+            hudPickLine1.visible = false;
+            hudPickLine2.visible = false;
+          }
+        } else {
+          trimState.hover = picked;
+          if (picked) updateHudLine(hudHoverLine, picked.segA, picked.segB, thick);
+          else hudHoverLine.visible = false;
+
+          if (trimState.targetPick) updateHudLine(hudPickLine1, trimState.targetPick.segA, trimState.targetPick.segB, thick);
+          else hudPickLine1.visible = false;
+
+          if (trimState.lastTarget && trimState.lastCutter && trimState.lastUntilMs > now) {
+            updateHudLine(hudPickLine1, trimState.lastTarget.segA, trimState.lastTarget.segB, thick);
+            updateHudLine(hudPickLine2, trimState.lastCutter.segA, trimState.lastCutter.segB, thick);
+          } else if (trimState.step === "pickCutter" && trimState.targetPick) {
+            hudPickLine2.visible = false;
+          } else {
+            if (trimState.lastUntilMs <= now) {
+              trimState.lastTarget = null;
+              trimState.lastCutter = null;
+              trimState.lastUntilMs = 0;
+              if (!trimState.targetPick) {
+                hudPickLine1.visible = false;
+                hudPickLine2.visible = false;
+              }
+            }
+          }
+        }
+      }
+      // no return; other pointermove handling can still run (e.g. marquee box)
     }
 
     if (mode === "layout" && layoutTool === "wall" && wallDraw.active && wallDraw.a && wallDraw.preview) {
