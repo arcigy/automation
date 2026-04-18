@@ -881,8 +881,44 @@ export function startApp(args: AppArgs) {
       color: 0xc6cbd6
     });
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, wallDefault.heightM, thicknessMm / 1000), mat);
-    updateWallMesh(mesh, a, b, thicknessMm);
+    updateWallMeshWithJustification(mesh, a, b, thicknessMm, wallDefault.justification, wallDefault.exteriorSign);
     return mesh;
+  }
+
+  function wallRefLineToCenterLine(
+    refA: THREE.Vector3,
+    refB: THREE.Vector3,
+    thicknessMm: number,
+    justification: "center" | "interior" | "exterior",
+    exteriorSign: 1 | -1
+  ) {
+    if (justification === "center") return { a: refA.clone(), b: refB.clone() };
+    const d = refB.clone().sub(refA);
+    const len = d.length();
+    if (len < 1e-8) return { a: refA.clone(), b: refB.clone() };
+    d.multiplyScalar(1 / len);
+    const n = new THREE.Vector3(-d.z, 0, d.x);
+    const half = Math.max(10, thicknessMm) / 2000; // meters
+    const s = exteriorSign;
+    const offset =
+      justification === "exterior"
+        ? n.clone().multiplyScalar(-s * half)
+        : n.clone().multiplyScalar(s * half); // interior
+    return { a: refA.clone().add(offset), b: refB.clone().add(offset) };
+  }
+
+  function updateWallMeshWithJustification(
+    mesh: THREE.Mesh,
+    refA: THREE.Vector3 | null,
+    refB: THREE.Vector3 | null,
+    thicknessMm: number,
+    justification: "center" | "interior" | "exterior",
+    exteriorSign: 1 | -1
+  ) {
+    const a = refA ?? new THREE.Vector3(0, 0, 0);
+    const b = refB ?? a.clone();
+    const center = wallRefLineToCenterLine(a, b, thicknessMm, justification, exteriorSign);
+    updateWallMesh(mesh, center.a, center.b, thicknessMm);
   }
 
   function makeWallPreviewMesh(a: THREE.Vector3, b: THREE.Vector3, thicknessMm: number) {
@@ -894,8 +930,11 @@ export function startApp(args: AppArgs) {
   }
 
   function rebuildWall(w: WallInstance) {
-    const a = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
-    const b = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+    const refA = new THREE.Vector3(w.params.aMm.x / 1000, 0, w.params.aMm.z / 1000);
+    const refB = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
+    const just = w.params.justification ?? "center";
+    const s = (w.params.exteriorSign ?? 1) as 1 | -1;
+    const { a, b } = wallRefLineToCenterLine(refA, refB, w.params.thicknessMm, just, s);
     // Revit-like join rendering in 3D: extend ends to form miter-like corner joins.
     // This does not change stored axis endpoints (aMm/bMm); only the rendered mesh.
     const d = b.clone().sub(a);
@@ -1202,6 +1241,37 @@ export function startApp(args: AppArgs) {
         return;
       }
       if (ev.key === " " || ev.code === "Space") {
+        // Mirror wall side (Revit-like): works while drawing + when wall is selected.
+        if (layoutTool === "wall") {
+          wallDefault.exteriorSign = wallDefault.exteriorSign === 1 ? -1 : 1;
+          setUnderlayStatus(`Wall: exterior ${wallDefault.exteriorSign === 1 ? "left" : "right"} of A->B.`);
+          if (wallDraw.preview && wallDraw.a) {
+            updateWallMeshWithJustification(
+              wallDraw.preview,
+              wallDraw.a,
+              wallDraw.hoverB ?? wallDraw.a,
+              wallDefault.thicknessMm,
+              wallDefault.justification,
+              wallDefault.exteriorSign
+            );
+          }
+          mountProps();
+          ev.preventDefault();
+          return;
+        }
+
+        if (selectedKind === "wall" && selectedWallId) {
+          const w = walls.find((x) => x.id === selectedWallId) ?? null;
+          if (w) {
+            w.params.exteriorSign = (w.params.exteriorSign ?? 1) === 1 ? -1 : 1;
+            for (const ww of walls) rebuildWall(ww);
+            rebuildWallPlanMesh();
+            mountProps();
+          }
+          ev.preventDefault();
+          return;
+        }
+
         setToolSelect();
         ev.preventDefault();
         return;
@@ -1305,7 +1375,14 @@ export function startApp(args: AppArgs) {
             wallDraw.active = true;
             wallDraw.a = new THREE.Vector3(w.params.bMm.x / 1000, 0, w.params.bMm.z / 1000);
             wallDraw.hoverB = wallDraw.a.clone();
-            updateWallMesh(wallDraw.preview!, wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+        updateWallMeshWithJustification(
+          wallDraw.preview!,
+          wallDraw.a,
+          wallDraw.a,
+          wallDefault.thicknessMm,
+          wallDefault.justification,
+          wallDefault.exteriorSign
+        );
             setUnderlayStatus("Wall: ďalší bod... (píš mm + Enter, Shift = bez axis snap, Esc = stop)");
             selectedKind = "wall";
             selectedWallId = w.id;
@@ -2486,17 +2563,30 @@ export function startApp(args: AppArgs) {
     hint.className = "muted";
     hint.textContent = "Klikni 2 body v 2D. Shift = bez axis snap. Esc = stop chain.";
     s.appendChild(hint);
+    const updatePreview = () => {
+      if (!wallDraw.preview || !wallDraw.a) return;
+      updateWallMeshWithJustification(
+        wallDraw.preview,
+        wallDraw.a,
+        wallDraw.hoverB ?? wallDraw.a,
+        wallDefault.thicknessMm,
+        wallDefault.justification,
+        wallDefault.exteriorSign
+      );
+    };
     th.addEventListener("change", () => {
       wallDefault.thicknessMm = Math.max(10, Number(th.value) || wallDefault.thicknessMm);
       th.value = String(wallDefault.thicknessMm);
-      if (wallDraw.preview) updateWallMesh(wallDraw.preview, wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+      updatePreview();
     });
     just.addEventListener("change", () => {
       wallDefault.justification =
         just.value === "interior" ? "interior" : just.value === "exterior" ? "exterior" : "center";
+      updatePreview();
     });
     flip.addEventListener("click", () => {
       wallDefault.exteriorSign = wallDefault.exteriorSign === 1 ? -1 : 1;
+      updatePreview();
       setUnderlayStatus(`Wall: exterior ${wallDefault.exteriorSign === 1 ? "left" : "right"} of A→B.`);
     });
     mat.addEventListener("change", () => {
@@ -2543,10 +2633,12 @@ export function startApp(args: AppArgs) {
     });
     just.addEventListener("change", () => {
       w.params.justification = just.value === "interior" ? "interior" : just.value === "exterior" ? "exterior" : "center";
+      for (const ww of walls) rebuildWall(ww);
       rebuildWallPlanMesh();
     });
     flip.addEventListener("click", () => {
       w.params.exteriorSign = (w.params.exteriorSign ?? 1) === 1 ? -1 : 1;
+      for (const ww of walls) rebuildWall(ww);
       rebuildWallPlanMesh();
       mountProps();
     });
@@ -4229,7 +4321,14 @@ export function startApp(args: AppArgs) {
           wallDraw.preview.name = "wallPreview";
           layoutRoot.add(wallDraw.preview);
         }
-        updateWallMesh(wallDraw.preview, wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+        updateWallMeshWithJustification(
+          wallDraw.preview,
+          wallDraw.a,
+          wallDraw.a,
+          wallDefault.thicknessMm,
+          wallDefault.justification,
+          wallDefault.exteriorSign
+        );
         setUnderlayStatus("Wall: druhý bod... (píš mm + Enter, Shift = bez axis snap, Esc = stop)");
         return;
       }
@@ -4275,7 +4374,14 @@ export function startApp(args: AppArgs) {
         wallDraw.hoverB = wallDraw.a.clone();
         wallDraw.typedMm = "";
         wallTypedHud.style.display = "none";
-        updateWallMesh(wallDraw.preview!, wallDraw.a, wallDraw.a, wallDefault.thicknessMm);
+        updateWallMeshWithJustification(
+          wallDraw.preview!,
+          wallDraw.a,
+          wallDraw.a,
+          wallDefault.thicknessMm,
+          wallDefault.justification,
+          wallDefault.exteriorSign
+        );
         setUnderlayStatus("Wall: ďalší bod... (píš mm + Enter, Shift = bez axis snap, Esc = stop)");
         // Keep wall tool active; just show properties for the placed wall.
         selectedKind = "wall";
@@ -4599,7 +4705,14 @@ export function startApp(args: AppArgs) {
       const b0 = snapped.kind !== "none" ? snapped.point : hitPoint;
       const b = shouldAxisSnap ? snapAxisXZ(wallDraw.a, b0, true) : b0;
       wallDraw.hoverB = b.clone();
-      updateWallMesh(wallDraw.preview, wallDraw.a, b, wallDefault.thicknessMm);
+      updateWallMeshWithJustification(
+        wallDraw.preview,
+        wallDraw.a,
+        b,
+        wallDefault.thicknessMm,
+        wallDefault.justification,
+        wallDefault.exteriorSign
+      );
 
       if (wallDraw.typedMm.trim().length > 0) {
         wallTypedHud.textContent = `${wallDraw.typedMm} mm`;
