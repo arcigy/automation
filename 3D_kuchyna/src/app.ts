@@ -207,6 +207,60 @@ export function startApp(args: AppArgs) {
     wallSnapMarkers.visible = viewMode === "2d";
   };
 
+  const selectionHighlights = new THREE.Group();
+  selectionHighlights.name = "selectionHighlights";
+  selectionHighlights.visible = false;
+  layoutRoot.add(selectionHighlights);
+
+  const updateSelectionHighlights = () => {
+    for (const ch of [...selectionHighlights.children]) {
+      selectionHighlights.remove(ch);
+      const m = ch as any;
+      m.geometry?.dispose?.();
+      if (Array.isArray(m.material)) for (const mm of m.material) mm?.dispose?.();
+      else m.material?.dispose?.();
+    }
+
+    if (mode !== "layout" || viewMode !== "2d") {
+      selectionHighlights.visible = false;
+      return;
+    }
+
+    // Walls: draw outline of each selected wall (trimmed) when available.
+    for (const id of selectedWallIds) {
+      const poly = wallSolvedOutlines.get(id) ?? null;
+      if (!poly || poly.length < 3) continue;
+      const pts = poly.map((p) => new THREE.Vector3(p.x, 0.012, p.z));
+      pts.push(new THREE.Vector3(poly[0].x, 0.012, poly[0].z));
+      const geom = new THREE.BufferGeometry().setFromPoints(pts);
+      const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: 0x3ddc97, transparent: true, opacity: 0.98, depthWrite: false }));
+      line.renderOrder = 60;
+      selectionHighlights.add(line);
+    }
+
+    // Modules: box helper per selected instance
+    for (const id of selectedInstanceIds) {
+      const inst = instances.find((x) => x.id === id) ?? null;
+      if (!inst) continue;
+      const box = new THREE.Box3().setFromObject(inst.root);
+      const min = box.min, max = box.max;
+      const y = 0.012;
+      const pts = [
+        new THREE.Vector3(min.x, y, min.z),
+        new THREE.Vector3(max.x, y, min.z),
+        new THREE.Vector3(max.x, y, max.z),
+        new THREE.Vector3(min.x, y, max.z),
+        new THREE.Vector3(min.x, y, min.z)
+      ];
+      const geom = new THREE.BufferGeometry().setFromPoints(pts);
+      const line = new THREE.Line(geom, new THREE.LineBasicMaterial({ color: 0x5c8cff, transparent: true, opacity: 0.98, depthWrite: false }));
+      line.renderOrder = 60;
+      selectionHighlights.add(line);
+    }
+
+    selectionHighlights.visible = selectionHighlights.children.length > 0;
+  };
+
   const underlayMat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
@@ -944,8 +998,55 @@ export function startApp(args: AppArgs) {
     }
     d.normalize();
 
-    const extA = joinExtensionM(w, w.params.aMm);
-    const extB = joinExtensionM(w, w.params.bMm);
+    const aMmC = toMmPoint(a);
+    const bMmC = toMmPoint(b);
+
+    const dirOutCenter = (at: "a" | "b", aa: { x: number; z: number }, bb: { x: number; z: number }) =>
+      at === "a" ? new THREE.Vector3(bb.x - aa.x, 0, bb.z - aa.z) : new THREE.Vector3(aa.x - bb.x, 0, aa.z - bb.z);
+
+    const joinExtAt = (node: { x: number; z: number }, at: "a" | "b") => {
+      const neighbors: Array<{ v: THREE.Vector3 }> = [];
+      for (const other of walls) {
+        if (other.id === w.id) continue;
+        const oRefA = new THREE.Vector3(other.params.aMm.x / 1000, 0, other.params.aMm.z / 1000);
+        const oRefB = new THREE.Vector3(other.params.bMm.x / 1000, 0, other.params.bMm.z / 1000);
+        const oJust = other.params.justification ?? "center";
+        const oS = (other.params.exteriorSign ?? 1) as 1 | -1;
+        const oC = wallRefLineToCenterLine(oRefA, oRefB, other.params.thicknessMm, oJust, oS);
+        const oa = toMmPoint(oC.a);
+        const ob = toMmPoint(oC.b);
+        const isA = mmDist(oa, node) <= wallJoinTolMm;
+        const isB = mmDist(ob, node) <= wallJoinTolMm;
+        if (!isA && !isB) continue;
+        const v = dirOutCenter(isA && !isB ? "a" : "b", oa, ob);
+        if (v.lengthSq() > 1e-6) neighbors.push({ v });
+      }
+
+      if (neighbors.length === 0) return 0;
+
+      const v0 = dirOutCenter(at, aMmC, bMmC);
+      if (v0.lengthSq() < 1e-6) return 0;
+      v0.normalize();
+
+      let bestTheta = Infinity;
+      for (const n of neighbors) {
+        const v1 = n.v.clone().normalize();
+        const dot = Math.max(-1, Math.min(1, v0.dot(v1)));
+        const theta = Math.acos(dot);
+        if (theta < 0.2 || Math.abs(Math.PI - theta) < 0.2) continue;
+        if (theta < bestTheta) bestTheta = theta;
+      }
+      if (!isFinite(bestTheta) || bestTheta === Infinity) return 0;
+
+      const thickM = Math.max(0.01, w.params.thicknessMm / 1000);
+      const tanHalf = Math.tan(bestTheta / 2);
+      if (tanHalf < 1e-4) return 0;
+      const ext = (thickM / 2) / tanHalf;
+      return Math.min(1.2, Math.max(0, ext));
+    };
+
+    const extA = joinExtAt(aMmC, "a");
+    const extB = joinExtAt(bMmC, "b");
 
     const aExt = a.clone().addScaledVector(d, -extA);
     const bExt = b.clone().addScaledVector(d, extB);
@@ -1644,6 +1745,9 @@ export function startApp(args: AppArgs) {
 
   const marquee = {
     active: false,
+    pending: false,
+    pointerId: null as number | null,
+    hitSomething: false,
     startX: 0,
     startY: 0,
     mode: "contain" as "contain" | "touch"
@@ -3188,6 +3292,7 @@ export function startApp(args: AppArgs) {
         (selectedUnderlayBox.material as THREE.Material).dispose();
         selectedUnderlayBox = null;
       }
+      updateSelectionHighlights();
       mountProps();
     }
 
@@ -3258,6 +3363,7 @@ export function startApp(args: AppArgs) {
     const w = id ? walls.find((x) => x.id === id) ?? null : null;
     if (!w) {
       showWallSnapMarkersFor(null);
+      updateSelectionHighlights();
       mountProps();
       return;
     }
@@ -3266,6 +3372,7 @@ export function startApp(args: AppArgs) {
     selectedWallBox.name = "wallSelectionBox";
     scene.add(selectedWallBox);
     showWallSnapMarkersFor(id);
+    updateSelectionHighlights();
     mountProps();
   }
 
@@ -3751,6 +3858,7 @@ export function startApp(args: AppArgs) {
     }
 
     wallSnapMarkers.visible = enabled && selectedKind === "wall" && !!selectedWallId;
+    updateSelectionHighlights();
 
       // Walls: render merged 2D mesh in plan view for clean joins.
       wallPlanGroup.visible = enabled;
@@ -4206,27 +4314,23 @@ export function startApp(args: AppArgs) {
   });
 
   renderer.domElement.addEventListener("pointerdown", (ev) => {
-    // Marquee selection in 2D layout select tool (right button).
-    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && ev.button === 2 && !measureState.enabled) {
+    // Marquee selection in 2D layout select tool (left button) - start pending, activate on drag.
+    if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && ev.button === 0 && !measureState.enabled) {
       const rect = renderer.domElement.getBoundingClientRect();
-      marquee.active = true;
+      marquee.pending = true;
+      marquee.active = false;
+      marquee.pointerId = ev.pointerId;
+      marquee.hitSomething = false;
       marquee.startX = ev.clientX - rect.left;
       marquee.startY = ev.clientY - rect.top;
       marquee.mode = "contain";
-      marqueeEl.style.border = "1px solid rgba(92, 140, 255, 0.95)";
-      marqueeEl.style.background = "rgba(92, 140, 255, 0.10)";
-      marqueeEl.style.left = `${marquee.startX}px`;
-      marqueeEl.style.top = `${marquee.startY}px`;
-      marqueeEl.style.width = "0px";
-      marqueeEl.style.height = "0px";
-      marqueeEl.style.display = "block";
+      marqueeEl.style.display = "none";
       try {
         renderer.domElement.setPointerCapture(ev.pointerId);
       } catch {
         // ignore
       }
-      ev.preventDefault();
-      return;
+      // do not return; we still want click selection / dragging to work
     }
 
     const rect = renderer.domElement.getBoundingClientRect();
@@ -4394,19 +4498,8 @@ export function startApp(args: AppArgs) {
 
       // 2D wall selection without raycasting (walls are hidden in 2D; plan mesh is merged).
       if (viewMode === "2d" && layoutTool === "select" && ev.button === 0) {
-        if (!underlayMesh.visible || underlayState.pinned) {
-          underlayCal.active = false;
-          underlayCal.first = null;
-          setUnderlayStatus("Underlay not available.");
-          return;
-        }
-
-        const hit = raycaster.intersectObject(underlayMesh, false)[0];
-        if (!hit) {
-          setUnderlayStatus("Click on underlay.");
-          return;
-        }
-        const hitPoint = hit.point.clone();
+        const hitPoint = new THREE.Vector3();
+        if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
         const pMm = toMmPoint(hitPoint);
         const rect2 = renderer.domElement.getBoundingClientRect();
         const mouse = { x: ev.clientX - rect2.left, y: ev.clientY - rect2.top };
@@ -4436,6 +4529,12 @@ export function startApp(args: AppArgs) {
           if (!bestPoly || px < bestPoly.px) bestPoly = { id, px };
         }
         if (bestPoly) {
+          if (marquee.pending && marquee.pointerId === ev.pointerId) {
+            marquee.hitSomething = true;
+            marquee.pending = false;
+            marquee.active = false;
+            marqueeEl.style.display = "none";
+          }
           setSelectedWall(bestPoly.id);
           return;
         }
@@ -4451,6 +4550,12 @@ export function startApp(args: AppArgs) {
         }
 
         if (best && best.px <= 10) {
+          if (marquee.pending && marquee.pointerId === ev.pointerId) {
+            marquee.hitSomething = true;
+            marquee.pending = false;
+            marquee.active = false;
+            marqueeEl.style.display = "none";
+          }
           setSelectedWall(best.id);
           return;
         }
@@ -4465,6 +4570,12 @@ export function startApp(args: AppArgs) {
 
       if (kind === "window") {
         if (!windowInst) return;
+        if (marquee.pending && marquee.pointerId === ev.pointerId) {
+          marquee.hitSomething = true;
+          marquee.pending = false;
+          marquee.active = false;
+          marqueeEl.style.display = "none";
+        }
         setSelectedWindow();
 
         windowDragState.active = true;
@@ -4489,6 +4600,12 @@ export function startApp(args: AppArgs) {
           setSelectedWall(null);
           return;
         }
+        if (marquee.pending && marquee.pointerId === ev.pointerId) {
+          marquee.hitSomething = true;
+          marquee.pending = false;
+          marquee.active = false;
+          marqueeEl.style.display = "none";
+        }
         setSelectedWall(wallId);
         return;
       }
@@ -4496,6 +4613,12 @@ export function startApp(args: AppArgs) {
         if (viewMode === "2d" && layoutTool === "select" && ev.button === 0 && underlayMesh.visible && !underlayState.pinned) {
           const underlayHit = raycaster.intersectObject(underlayMesh, false)[0];
           if (underlayHit) {
+            if (marquee.pending && marquee.pointerId === ev.pointerId) {
+              marquee.hitSomething = true;
+              marquee.pending = false;
+              marquee.active = false;
+              marqueeEl.style.display = "none";
+            }
             setSelectedUnderlay();
             const hitPoint = new THREE.Vector3();
             if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
@@ -4508,6 +4631,10 @@ export function startApp(args: AppArgs) {
             return;
           }
         }
+        if (marquee.pending && marquee.pointerId === ev.pointerId) {
+          // don't clear selection yet; if it becomes a drag we want marquee selection
+          return;
+        }
         setSelectedWall(null);
         setSelectedModule(null);
         clearWindowLightIfMissing();
@@ -4516,6 +4643,12 @@ export function startApp(args: AppArgs) {
 
       const inst = findInstance(id);
       if (!inst) return;
+      if (marquee.pending && marquee.pointerId === ev.pointerId) {
+        marquee.hitSomething = true;
+        marquee.pending = false;
+        marquee.active = false;
+        marqueeEl.style.display = "none";
+      }
       setSelectedModule(id);
 
       // Disable object dragging in 3D view (layout edits happen in 2D).
@@ -4660,6 +4793,24 @@ export function startApp(args: AppArgs) {
       marqueeEl.style.top = `${y0}px`;
       marqueeEl.style.width = `${Math.max(0, x1 - x0)}px`;
       marqueeEl.style.height = `${Math.max(0, y1 - y0)}px`;
+    }
+
+    if (marquee.pending && !marquee.active && marquee.pointerId === ev.pointerId) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const x = ev.clientX - rect.left;
+      const y = ev.clientY - rect.top;
+      const w = Math.abs(x - marquee.startX);
+      const h = Math.abs(y - marquee.startY);
+      if (w >= 6 || h >= 6) {
+        marquee.active = true;
+        marqueeEl.style.border = "1px solid rgba(92, 140, 255, 0.95)";
+        marqueeEl.style.background = "rgba(92, 140, 255, 0.10)";
+        marqueeEl.style.left = `${marquee.startX}px`;
+        marqueeEl.style.top = `${marquee.startY}px`;
+        marqueeEl.style.width = "0px";
+        marqueeEl.style.height = "0px";
+        marqueeEl.style.display = "block";
+      }
     }
 
     if (mode === "layout" && viewMode === "2d" && layoutTool === "select" && underlayDragState.active && underlayDragState.pointerId === ev.pointerId) {
@@ -4906,8 +5057,25 @@ export function startApp(args: AppArgs) {
       return;
     }
 
+    if (marquee.pending && marquee.pointerId === ev.pointerId && !marquee.active) {
+      marquee.pending = false;
+      marquee.pointerId = null;
+      if (!marquee.hitSomething && viewMode === "2d" && layoutTool === "select") {
+        setSelectedWall(null);
+        setSelectedModule(null);
+      }
+      try {
+        renderer.domElement.releasePointerCapture(ev.pointerId);
+      } catch {
+        // ignore
+      }
+      return;
+    }
+
     if (marquee.active) {
       marquee.active = false;
+      marquee.pending = false;
+      marquee.pointerId = null;
       marqueeEl.style.display = "none";
 
       const rect = renderer.domElement.getBoundingClientRect();
@@ -5017,6 +5185,7 @@ export function startApp(args: AppArgs) {
         for (const id of nextWalls) selectedWallIds.add(id);
         selectedInstanceIds.clear();
         for (const id of nextMods) selectedInstanceIds.add(id);
+        updateSelectionHighlights();
         mountProps();
       }
 
