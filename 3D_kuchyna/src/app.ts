@@ -81,9 +81,6 @@ export function startApp(args: AppArgs) {
   let photoLastLightingRevision = -1;
   let lastCameraWorld = new Float32Array(16);
   let lastCameraProj = new Float32Array(16);
-  let lastDimZoom = -1;
-  let lastDimRectW = -1;
-  let lastDimRectH = -1;
 
   const copyM16 = (out: Float32Array, m: THREE.Matrix4) => {
     const e = m.elements;
@@ -7229,13 +7226,10 @@ export function startApp(args: AppArgs) {
     updateWallEditHud();
 
     const activeCam = cam();
-    if (mode === "layout" && viewMode === "2d" && dimensions.length > 0 && activeCam instanceof THREE.OrthographicCamera) {
-      const rect = renderer.domElement.getBoundingClientRect();
-      if (Math.abs(activeCam.zoom - lastDimZoom) > 1e-4 || rect.width !== lastDimRectW || rect.height !== lastDimRectH) {
-        lastDimZoom = activeCam.zoom;
-        lastDimRectW = rect.width;
-        lastDimRectH = rect.height;
-        // Only text scale needs to be perfectly screen-fixed on zoom; geometry can stay as-is.
+    if (mode === "layout" && viewMode === "2d" && activeCam instanceof THREE.OrthographicCamera) {
+      // Frame-driven scale update (no threshold) to avoid any zoom "jitter" on dimension text.
+      if (dimensions.length > 0 || dimPreview.root.visible) {
+        const rect = renderer.domElement.getBoundingClientRect();
         updateDimensionTextScale(rect);
       }
     }
